@@ -7,6 +7,7 @@ import { HINTS_AFRICA } from "./data/hints-africa.js";
 import { HINTS_AMERICAS } from "./data/hints-americas.js";
 import { HINTS_OCEANIA } from "./data/hints-oceania.js";
 import { createMakeChoices } from "./data/choices.js";
+import { emptySaveV2, loadSaveV2, persistSaveV2, pushRecent } from "./data/save.js";
 const HINTS = { ...DEMO_HINTS, ...HINTS_ASIA, ...HINTS_EUROPE, ...HINTS_AFRICA, ...HINTS_AMERICAS, ...HINTS_OCEANIA };
 
 /* =========================================================
@@ -359,14 +360,7 @@ function BigBtn({ children, onClick, color = "#3d8fe0", disabled, style }) {
   );
 }
 
-/* ---------- セーブ（3スロット習熟度） ---------- */
-const SAVE_KEY = "sekai-chizu-quest-v1";
-const emptySave = () => ({ prog: {}, plays: 0, perfects: 0, stickers: {} });
-function loadSave() {
-  try { const r = localStorage.getItem(SAVE_KEY); if (r) return { ...emptySave(), ...JSON.parse(r) }; } catch (e) {}
-  return emptySave();
-}
-function persistSave(d) { try { localStorage.setItem(SAVE_KEY, JSON.stringify(d)); } catch (e) {} }
+/* ---------- セーブ（3スロット習熟度・プロフィール2枠） ---------- */
 
 const SLOTS = ["name", "flag", "cap"];
 const SLOT_LABEL = { name: "くにのなまえ", flag: "こっき", cap: "しゅと" };
@@ -454,7 +448,8 @@ function nearestUnclaimed(terr, target, n) {
 /* ================= メイン ================= */
 export default function App() {
   const [screen, setScreen] = useState("home");
-  const [save, setSave] = useState(emptySave);
+  const [saveDoc, setSaveDoc] = useState(emptySaveV2);
+  const save = saveDoc.profiles[saveDoc.activeProfile];
   const [quiz, setQuiz] = useState([]);
   const [quizMode, setQuizMode] = useState("random");
   const [quizRegion, setQuizRegion] = useState("world");
@@ -488,9 +483,23 @@ export default function App() {
   const [gachaMode, setGachaMode] = useState("normal");  // normal | rainbow | celeb
   const [gachaFrom, setGachaFrom] = useState("solo");    // solo | vs
 
-  useEffect(() => { setSave(loadSave()); }, []);
+  useEffect(() => { setSaveDoc(loadSaveV2()); }, []);
   const updateSave = useCallback((up) => {
-    setSave((prev) => { const next = typeof up === "function" ? up(prev) : up; persistSave(next); return next; });
+    setSaveDoc((prev) => {
+      const cur = prev.profiles[prev.activeProfile];
+      const nextProfile = typeof up === "function" ? up(cur) : up;
+      const next = { ...prev, profiles: { ...prev.profiles, [prev.activeProfile]: nextProfile } };
+      persistSaveV2(next);
+      return next;
+    });
+  }, []);
+  const switchProfile = useCallback((pid) => {
+    setSaveDoc((prev) => {
+      if (prev.activeProfile === pid || !prev.profiles[pid]) return prev;
+      const next = { ...prev, activeProfile: pid };
+      persistSaveV2(next);
+      return next;
+    });
   }, []);
 
   const startQuiz = (mode, region = "world") => {
@@ -528,6 +537,30 @@ export default function App() {
     return () => timers.forEach(clearTimeout);
   }, [screen, phase, qIdx]);
 
+  /* よみあげ（voice:trueのプロフィールのみ・失敗時は無音でフォールバック） */
+  useEffect(() => {
+    if (screen !== "quiz" || !save.voice) return;
+    const synth = typeof window !== "undefined" ? window.speechSynthesis : null;
+    if (!synth) return;
+    const q = quiz[qIdx];
+    if (!q) return;
+    let text = null;
+    if (showQ && phase === "answer") {
+      text = q.qType === "capital" ? `${plain(q.c.n)}の しゅとは どこかな？`
+        : q.qType === "flag" ? "このこっきは どこのくにかな？"
+        : "ここは どこかな？";
+    } else if (phase === "feedback") {
+      text = `こたえは ${plain(q.c.n)}だよ`;
+    }
+    if (!text) return;
+    try {
+      synth.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = "ja-JP";
+      synth.speak(u);
+    } catch (e) { /* 読み上げ失敗時は無音でフォールバック */ }
+  }, [screen, phase, showQ, qIdx, save.voice]);
+
   const applyResult = (q, ok) => {
     setPhase("feedback");
     if (ok) {
@@ -538,9 +571,11 @@ export default function App() {
       updateSave((s) => ({
         ...s,
         prog: { ...s.prog, [q.c.id]: { ...progOf(s, q.c.id), [slot]: progOf(s, q.c.id)[slot] + 1 } },
+        recent: pushRecent(s.recent, true),
       }));
     } else {
       sndWrong();
+      updateSave((s) => ({ ...s, recent: pushRecent(s.recent, false) }));
     }
   };
   const answer = (choice) => {
@@ -675,7 +710,24 @@ export default function App() {
   if (screen === "home") {
     return (
       <div style={wrap}><style>{css}</style>
-        <div style={{ textAlign: "center", margin: "18px 0 6px" }}>
+        <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 12.5, fontWeight: 800, color: "#7a8aa0" }}>👧 だれが あそぶ？</span>
+          {["p1", "p2"].map((pid) => {
+            const active = saveDoc.activeProfile === pid;
+            const label = saveDoc.profiles[pid].name === "（入力）"
+              ? (pid === "p1" ? "① ひとりめ" : "② ふたりめ")
+              : saveDoc.profiles[pid].name;
+            return (
+              <button key={pid} onClick={() => switchProfile(pid)} style={{
+                padding: "5px 14px", borderRadius: 999, fontFamily: "inherit",
+                border: active ? "2.5px solid #2f7fd4" : "2.5px solid #d5dfe9",
+                background: active ? "#eaf6ff" : "#fff", color: "#2a3a4a",
+                fontWeight: 800, fontSize: 13, cursor: "pointer",
+              }}>{label}</button>
+            );
+          })}
+        </div>
+        <div style={{ textAlign: "center", margin: "10px 0 6px" }}>
           <div style={{ fontSize: 14, fontWeight: 800, color: "#5a7ba0", letterSpacing: ".25em" }}>196かこくを マスターしよう</div>
           <h1 style={{ margin: "4px 0", fontSize: 34, fontWeight: 900, color: "#2f7fd4", textShadow: "0 3px 0 rgba(0,0,0,.08)" }}>
             せかいちず<br />クエスト
