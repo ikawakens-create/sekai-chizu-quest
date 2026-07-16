@@ -6,6 +6,7 @@ import { HINTS_EUROPE } from "./data/hints-europe.js";
 import { HINTS_AFRICA } from "./data/hints-africa.js";
 import { HINTS_AMERICAS } from "./data/hints-americas.js";
 import { HINTS_OCEANIA } from "./data/hints-oceania.js";
+import { createMakeChoices } from "./data/choices.js";
 const HINTS = { ...DEMO_HINTS, ...HINTS_ASIA, ...HINTS_EUROPE, ...HINTS_AFRICA, ...HINTS_AMERICAS, ...HINTS_OCEANIA };
 
 /* =========================================================
@@ -65,6 +66,7 @@ const COUNTRIES = COUNTRY_GEO.map((c) => ({
   h: HINTS[c.id] || null,
 }));
 const byId = new Map(COUNTRIES.map((c) => [c.id, c]));
+const makeChoices = createMakeChoices(COUNTRIES);
 
 const HINT_ICON = { heritage: "🏛️", history: "📜", food: "🍴", japan: "🇯🇵", nature: "🐾" };
 
@@ -404,12 +406,6 @@ function pickTargets(save, region = "world") {
     }
   }
   return out;
-}
-function makeChoices(c, field) {
-  const same = shuffle(COUNTRIES.filter((x) => x.cont === c.cont && x.id !== c.id && (field !== "cap" || plain(x.cap) !== plain(c.cap))));
-  const others = shuffle(COUNTRIES.filter((x) => x.cont !== c.cont && x.id !== c.id));
-  const wrong = [...same, ...others].slice(0, 3);
-  return shuffle([c, ...wrong]);
 }
 function autoHints(c) {
   /* ヒント未整備の国のつなぎ：大陸ヒント＋面積ヒント */
