@@ -3,10 +3,12 @@
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
+  "type": "module",
   "scripts": {
     "build": "esbuild src/main.jsx --bundle --minify --outfile=pwa/app.js --loader:.js=jsx",
     "build:maps": "node build-maps.mjs && cp world.geo.js src/data/world.geo.js",
-    "build:artifact": "node build-artifact.mjs"
+    "build:artifact": "node build-artifact.mjs",
+    "test": "node --test test/*.test.js"
   },
   "keywords": [],
   "author": "",
