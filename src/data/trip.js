@@ -1,7 +1,7 @@
-/* 「せかいのたび」セッションの純粋ロジック（HANDOFF v1.1 §4/§5）。
+/* 「せかいのたび」セッションの純粋ロジック（HANDOFF v1.1 §4/§5/§6）。
    React状態を持たず、App.jsxからもテストからも同じ関数を呼べるようにする。
-   抽選はPR3では簡易重み（srs[id].lastAtが古い順）で代用し（B-2）、
-   PR4で§6のsrsWeightへ差し替える（呼び出し口はpickBySimpleWeightの1関数に閉じ込め）。 */
+   抽選の重み付けはsrsWeight（§6）に一本化。[おかえり]枠のみsrsWeight降順の
+   上位からランダム選出する（B-2の加齢重み付き抽選から置き換え）。 */
 import { TRIPS } from "./trips.js";
 import { pushRecent } from "./save.js";
 
@@ -49,8 +49,13 @@ export function nextLockedPack(save, trips = TRIPS) {
   return trips.find((t) => t.tier > maxTier) || null;
 }
 
-/* ---------- 簡易重み抽選（B-2）：srs[id].lastAtが古いほど当選しやすい。未記録は中立 ---------- */
-const NEUTRAL_AGE_MS = 3 * 24 * 60 * 60 * 1000; /* 未学習/未記録の中立あつかい(約3日相当) */
+/* ---------- §6 軽量SRS：忘却リスク = 経過日数 / (streak+1)。未学習は中立、上限10でクランプ ---------- */
+export function srsWeight(save, id, now = Date.now()) {
+  const s = save.srs[id];
+  if (!s) return 3;
+  const days = (now - s.lastAt) / 86400000;
+  return Math.min(10, 1 + (days / (s.streak + 1)) * 2);
+}
 
 function shuffleWith(rng, arr) {
   const a = [...arr];
@@ -61,12 +66,9 @@ function shuffleWith(rng, arr) {
   return a;
 }
 
+/* 抽選の重み付けはsrsWeightに一本化（PR4でB-2の簡易重みから差し替え） */
 export function pickBySimpleWeight(pool, count, srs, now = Date.now(), rng = Math.random) {
-  const weightOf = (id) => {
-    const s = srs && srs[id];
-    if (!s || !s.lastAt) return NEUTRAL_AGE_MS;
-    return Math.max(0, now - s.lastAt);
-  };
+  const weightOf = (id) => srsWeight({ srs }, id, now);
   let remaining = [...pool];
   const out = [];
   while (out.length < count && remaining.length > 0) {
@@ -82,6 +84,13 @@ export function pickBySimpleWeight(pool, count, srs, now = Date.now(), rng = Mat
     remaining.splice(idx, 1);
   }
   return out;
+}
+
+/* [おかえり]専用: srsWeight降順の上位からランダム選出（PR4でB-2の加齢重み付き抽選から置き換え） */
+function pickTopBySrsWeightRandom(pool, count, save, now, rng) {
+  const sorted = [...pool].sort((a, b) => srsWeight(save, b.id, now) - srsWeight(save, a.id, now));
+  const top = sorted.slice(0, Math.min(sorted.length, Math.max(count * 3, count)));
+  return shuffleWith(rng, top).slice(0, count);
 }
 
 /* base(既に選ばれた分)にfallbackPoolsの国を重複なしで補い、ちょうどcount件にする */
@@ -125,10 +134,10 @@ export function buildTripSession(countries, save, trip, { now = Date.now(), rng 
   const challengeTypes = ["map", "capital"];
   const challenge = challengePicked.map((c, i) => ({ section: "ちょうせん", qType: challengeTypes[i % challengeTypes.length], c }));
 
-  /* [おかえり] 「わすれかけ」上位（simple weight上位）から */
+  /* [おかえり] 「わすれかけ」上位（srsWeight降順の上位からランダム選出）から */
   const usedAll = new Set([...meet, ...discern, ...challenge].map((x) => x.c.id));
   const recallPool = countries.filter((c) => !usedAll.has(c.id) && stageOf(save, c.id) >= 1);
-  const recallBase = pickBySimpleWeight(recallPool, Math.min(1, recallPool.length), save.srs, now, rng);
+  const recallBase = pickTopBySrsWeightRandom(recallPool, Math.min(1, recallPool.length), save, now, rng);
   const recallPicked = fillDistinct(recallBase, 1, [countries.filter((c) => !usedAll.has(c.id)), countries], rng);
   const recall = recallPicked.map((c, i) => ({ section: "おかえり", qType: rotateTypes[i % rotateTypes.length], c }));
 
