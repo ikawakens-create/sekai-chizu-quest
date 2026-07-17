@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   stageOf, progOf, masteredSlotCount,
   unlockedTierMax, availablePacks, nextLockedPack,
-  srsWeight, pickBySimpleWeight, buildTripSession, pickMeetWrong,
+  srsWeight, pickBySimpleWeight, pickTopBySrsWeightRandom, buildTripSession, pickMeetWrong,
   tripAnswerOutcome, applyTripAnswer,
   computeStampValue, finishTrip, stampCountOf,
 } from "../src/data/trip.js";
@@ -190,6 +190,52 @@ test("srsWeight: 式の値そのものが仕様通り（min(10, 1 + days/(streak
   const expected = Math.min(10, 1 + (days / (streak + 1)) * 2);
   assert.equal(srsWeight(save, "C", now), expected);
   assert.equal(srsWeight(save, "C", now), 3); // 1 + 2/2*2 = 3
+});
+
+/* ---------- pickTopBySrsWeightRandom（[おかえり]枠: srsWeight降順の上位からランダム選出） ---------- */
+test("pickTopBySrsWeightRandom: srsWeightが低い（＝忘却リスクが低い）国は選ばれず、上位の国だけが選ばれる", () => {
+  const now = 1_000_000_000;
+  // 降順に厳密ランク付け: C0(9) > C1(7) > C2(5) > C3(3) > C4(1)
+  const save = {
+    srs: {
+      C0: { streak: 0, lastAt: now - 4 * 86400000 },
+      C1: { streak: 0, lastAt: now - 3 * 86400000 },
+      C2: { streak: 0, lastAt: now - 2 * 86400000 },
+      C3: { streak: 0, lastAt: now - 1 * 86400000 },
+      C4: { streak: 0, lastAt: now },
+    },
+  };
+  const pool = ["C0", "C1", "C2", "C3", "C4"].map((id) => ({ id }));
+  const seen = new Set();
+  for (let seed = 0; seed < 100; seed++) {
+    const picked = pickTopBySrsWeightRandom(pool, 1, save, now, seededRng(seed));
+    assert.equal(picked.length, 1);
+    seen.add(picked[0].id);
+  }
+  // 上位3件(C0,C1,C2)は候補ウィンドウ内、下位2件(C3,C4=srsWeight最低)は常に除外される
+  assert.ok(seen.has("C0") || seen.has("C1") || seen.has("C2"), "上位のいずれかは選ばれるはず");
+  assert.ok(!seen.has("C3"), "srsWeightが低いC3は選ばれないはず");
+  assert.ok(!seen.has("C4"), "srsWeightが最も低いC4は選ばれないはず");
+});
+
+test("pickTopBySrsWeightRandom: 上位ウィンドウ内では毎回同じ1件に固定されずランダム性がある", () => {
+  const now = 1_000_000_000;
+  const save = {
+    srs: {
+      C0: { streak: 0, lastAt: now - 4 * 86400000 },
+      C1: { streak: 0, lastAt: now - 3 * 86400000 },
+      C2: { streak: 0, lastAt: now - 2 * 86400000 },
+      C3: { streak: 0, lastAt: now - 1 * 86400000 },
+      C4: { streak: 0, lastAt: now },
+    },
+  };
+  const pool = ["C0", "C1", "C2", "C3", "C4"].map((id) => ({ id }));
+  const seen = new Set();
+  for (let seed = 0; seed < 100; seed++) {
+    const picked = pickTopBySrsWeightRandom(pool, 1, save, now, seededRng(seed));
+    seen.add(picked[0].id);
+  }
+  assert.ok(seen.size >= 2, `上位ウィンドウ内から複数の国が選ばれるはず（実際=${[...seen]}）`);
 });
 
 /* ---------- pickMeetWrong（stage0の誤答: 別大陸・別フラググループ） ---------- */

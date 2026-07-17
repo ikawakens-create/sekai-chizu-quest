@@ -8,10 +8,15 @@ const hintsEurope = fs.readFileSync("src/data/hints-europe.js", "utf8");
 const hintsAfrica = fs.readFileSync("src/data/hints-africa.js", "utf8");
 const hintsAmericas = fs.readFileSync("src/data/hints-americas.js", "utf8");
 const hintsOceania = fs.readFileSync("src/data/hints-oceania.js", "utf8");
+let save = fs.readFileSync("src/data/save.js", "utf8");
 
 function replaceOnce(from, to, label) {
   if (!src.includes(from)) throw new Error("置換対象が見つからない: " + label);
   src = src.replace(from, to);
+}
+function replaceOnceIn(text, from, to, label) {
+  if (!text.includes(from)) throw new Error("置換対象が見つからない: " + label);
+  return text.replace(from, to);
 }
 
 /* 1) データimportを削除（あとで本体を埋め込む） */
@@ -22,6 +27,7 @@ replaceOnce(`import { HINTS_EUROPE } from "./data/hints-europe.js";\n`, "", "eu 
 replaceOnce(`import { HINTS_AFRICA } from "./data/hints-africa.js";\n`, "", "af import");
 replaceOnce(`import { HINTS_AMERICAS } from "./data/hints-americas.js";\n`, "", "am import");
 replaceOnce(`import { HINTS_OCEANIA } from "./data/hints-oceania.js";\n`, "", "oc import");
+replaceOnce(`import { emptySaveV2, loadSaveV2, persistSaveV2, pushRecent, hiddenDifficultyOf } from "./data/save.js";\n`, "", "save import");
 
 /* 2) 国旗: img → 絵文字（Artifactはファイル同梱不可のため） */
 replaceOnce(
@@ -44,25 +50,53 @@ function Flag({ c, w = 96, style }) {
   );
 }`, "Flag component");
 
-/* 3) 保存: localStorage → window.storage（Artifact永続化API） */
-replaceOnce(
-`function loadSave() {
-  try { const r = localStorage.getItem(SAVE_KEY); if (r) return { ...emptySave(), ...JSON.parse(r) }; } catch (e) {}
-  return emptySave();
-}
-function persistSave(d) { try { localStorage.setItem(SAVE_KEY, JSON.stringify(d)); } catch (e) {} }`,
-`async function loadSave() {
+/* 3) 保存: save.js（localStorage前提）→ window.storage（Artifact永続化API）用に差し替え。
+   emptySaveV2/migrateFromV1/mergeSaveV2/pushRecent/hiddenDifficultyOfは純粋関数なのでそのまま埋め込み、
+   loadSaveV2/persistSaveV2のみwindow.storageのasync APIに差し替える。 */
+save = replaceOnceIn(save,
+`const defaultStorage = () => (typeof localStorage !== "undefined" ? localStorage : null);
+
+/* v2があればそれを読み込み、無ければv1から移行（v1キーは温存・削除しない） */
+export function loadSaveV2(storage = defaultStorage()) {
   try {
-    const r = await window.storage.get(SAVE_KEY);
-    if (r && r.value) return { ...emptySave(), ...JSON.parse(r.value) };
-  } catch (e) { /* まだデータがない */ }
-  return emptySave();
+    const v2raw = storage && storage.getItem(V2_KEY);
+    if (v2raw) return mergeSaveV2(JSON.parse(v2raw));
+    const v1raw = storage && storage.getItem(V1_KEY);
+    if (v1raw) {
+      const migrated = migrateFromV1(JSON.parse(v1raw));
+      persistSaveV2(migrated, storage);
+      return migrated;
+    }
+  } catch (e) { /* 破損データは初期状態にフォールバック */ }
+  return emptySaveV2();
 }
-function persistSave(d) { try { window.storage.set(SAVE_KEY, JSON.stringify(d)); } catch (e) {} }`, "storage");
+
+export function persistSaveV2(doc, storage = defaultStorage()) {
+  try { storage && storage.setItem(V2_KEY, JSON.stringify(doc)); } catch (e) {}
+}`,
+`/* v2があればそれを読み込み、無ければv1から移行（v1キーは温存・削除しない） */
+export async function loadSaveV2() {
+  try {
+    const v2 = await window.storage.get(V2_KEY);
+    if (v2 && v2.value) return mergeSaveV2(JSON.parse(v2.value));
+    const v1 = await window.storage.get(V1_KEY);
+    if (v1 && v1.value) {
+      const migrated = migrateFromV1(JSON.parse(v1.value));
+      persistSaveV2(migrated);
+      return migrated;
+    }
+  } catch (e) { /* 破損データは初期状態にフォールバック */ }
+  return emptySaveV2();
+}
+
+export function persistSaveV2(doc) {
+  try { window.storage.set(V2_KEY, JSON.stringify(doc)); } catch (e) {}
+}`, "storage");
+const saveInline = save.replace(/^export /gm, "");
 
 replaceOnce(
-`useEffect(() => { setSave(loadSave()); }, []);`,
-`useEffect(() => { loadSave().then(setSave); }, []);`, "load effect");
+`useEffect(() => { setSaveDoc(loadSaveV2()); }, []);`,
+`useEffect(() => { loadSaveV2().then(setSaveDoc); }, []);`, "load effect");
 
 /* 4) データ本体を先頭（reactのimport直後）に埋め込む */
 const geoInline = geo.replace(/^\/\* 自動生成.*\*\/\n/, "").replace(/^export /gm, "");
@@ -78,6 +112,7 @@ src = importLine +
   hintsAfrica.replace(/^export /gm, "") + "\n" +
   hintsAmericas.replace(/^export /gm, "") + "\n" +
   hintsOceania.replace(/^export /gm, "") + "\n" +
+  "\n/* ======== セーブv2（window.storage版） ======== */\n" + saveInline + "\n" +
   src.slice(importLine.length);
 
 fs.writeFileSync("sekai-chizu-quest.jsx", src);
