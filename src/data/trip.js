@@ -87,7 +87,7 @@ export function pickBySimpleWeight(pool, count, srs, now = Date.now(), rng = Mat
 }
 
 /* [おかえり]専用: srsWeight降順の上位からランダム選出（PR4でB-2の加齢重み付き抽選から置き換え） */
-function pickTopBySrsWeightRandom(pool, count, save, now, rng) {
+export function pickTopBySrsWeightRandom(pool, count, save, now, rng) {
   const sorted = [...pool].sort((a, b) => srsWeight(save, b.id, now) - srsWeight(save, a.id, now));
   const top = sorted.slice(0, Math.min(sorted.length, Math.max(count * 3, count)));
   return shuffleWith(rng, top).slice(0, count);
