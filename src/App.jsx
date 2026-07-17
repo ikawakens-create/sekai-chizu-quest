@@ -7,7 +7,12 @@ import { HINTS_AFRICA } from "./data/hints-africa.js";
 import { HINTS_AMERICAS } from "./data/hints-americas.js";
 import { HINTS_OCEANIA } from "./data/hints-oceania.js";
 import { createMakeChoices } from "./data/choices.js";
-import { emptySaveV2, loadSaveV2, persistSaveV2, pushRecent } from "./data/save.js";
+import { emptySaveV2, loadSaveV2, persistSaveV2, pushRecent, hiddenDifficultyOf } from "./data/save.js";
+import { FLAG_GROUPS } from "./data/flag-groups.js";
+import {
+  stageOf, availablePacks, nextLockedPack, buildTripSession, pickMeetWrong,
+  tripAnswerOutcome, applyTripAnswer, finishTrip, computeStampValue,
+} from "./data/trip.js";
 const HINTS = { ...DEMO_HINTS, ...HINTS_ASIA, ...HINTS_EUROPE, ...HINTS_AFRICA, ...HINTS_AMERICAS, ...HINTS_OCEANIA };
 
 /* =========================================================
@@ -483,6 +488,20 @@ export default function App() {
   const [gachaMode, setGachaMode] = useState("normal");  // normal | rainbow | celeb
   const [gachaFrom, setGachaFrom] = useState("solo");    // solo | vs
 
+  /* せかいのたび（10問=であい3/みわける4/ちょうせん2/おかえり1・3段はしご・再出題ルール） */
+  const [trip, setTrip] = useState(null);         // 選択中のパック
+  const [tripQuiz, setTripQuiz] = useState([]);    // 選択肢まで付与済みの10問セッション
+  const [tIdx, setTIdx] = useState(0);
+  const [tAttempt, setTAttempt] = useState(1);     // 同一問題への何回目の解答か（1=初回）
+  const [tOutcome, setTOutcome] = useState(null);  // tripAnswerOutcome() の結果
+  const [tCorrectCount, setTCorrectCount] = useState(0); // 初回正解数（けっか表示用）
+  const [tPhase, setTPhase] = useState("cardintro"); // cardintro | zoom | answer | feedback
+  const [tPicked, setTPicked] = useState(null);
+  const [tZoomed, setTZoomed] = useState(false);
+  const [tShowQ, setTShowQ] = useState(false);
+  const [tStampResult, setTStampResult] = useState(null); // { stampValue, correctCount, total }
+  const tAnswerLockRef = useRef(false);
+
   useEffect(() => { setSaveDoc(loadSaveV2()); }, []);
   const updateSave = useCallback((up) => {
     setSaveDoc((prev) => {
@@ -590,6 +609,120 @@ export default function App() {
       updateSave((s) => ({ ...s, plays: s.plays + 1, perfects: s.perfects + (correctCount === quiz.length ? 1 : 0) }));
       setScreen("result");
     } else { setQIdx((i) => i + 1); setPicked(null); setPhase("zoom"); }
+  };
+
+  /* --- せかいのたび：セッション開始（§5.2） --- */
+  const startTrip = (pack) => {
+    getCtx();
+    const now = Date.now();
+    const raw = buildTripSession(COUNTRIES, save, pack, { now });
+    const withChoices = raw.map((item) => {
+      if (item.qType === "meet2") {
+        const wrong = pickMeetWrong(COUNTRIES, item.c, FLAG_GROUPS);
+        return { ...item, choices: shuffle([item.c, wrong]) };
+      }
+      if (item.qType === "map") return item; // 選択肢なし：地図タップで解答
+      const field = item.qType === "capital" ? "cap" : "name";
+      const opts = {
+        difficulty: hiddenDifficultyOf(save.recent),
+        learnedIds: COUNTRIES.filter((c) => stageOf(save, c.id) >= 1).map((c) => c.id),
+        flagGroups: FLAG_GROUPS,
+      };
+      return { ...item, choices: makeChoices(item.c, field, opts) };
+    });
+    setTrip(pack);
+    setTripQuiz(withChoices);
+    setTIdx(0); setTAttempt(1); setTOutcome(null); setTCorrectCount(0);
+    setTPicked(null); setTStampResult(null);
+    setTPhase(withChoices[0].qType === "meet2" ? "cardintro" : "zoom");
+    setScreen("trip");
+  };
+
+  /* たびのズーム演出（であい以外）。タップでスキップ可 */
+  useEffect(() => {
+    if (screen !== "trip" || tPhase !== "zoom") return;
+    const item = tripQuiz[tIdx];
+    if (!item) return;
+    setTZoomed(false); setTShowQ(false);
+    tAnswerLockRef.current = false;
+    const timers = [];
+    const showsMap = item.qType !== "flag";
+    if (showsMap) timers.push(setTimeout(() => setTZoomed(true), 450));
+    timers.push(setTimeout(() => { setTShowQ(true); setTPhase("answer"); }, showsMap ? 1500 : 600));
+    return () => timers.forEach(clearTimeout);
+  }, [screen, tPhase, tIdx, tripQuiz]);
+
+  const skipTripZoom = () => {
+    if (tPhase !== "zoom") return;
+    setTZoomed(true); setTShowQ(true); setTPhase("answer");
+  };
+  const skipTripIntro = () => {
+    if (tPhase !== "cardintro") return;
+    tAnswerLockRef.current = false;
+    setTShowQ(true); setTPhase("answer");
+  };
+
+  const finishTripAttempt = (item, ok) => {
+    const outcome = tripAnswerOutcome(tAttempt, ok);
+    setTPhase("feedback");
+    setTOutcome(outcome);
+    if (ok) {
+      sndCorrect(); setPraise(pick(PRAISE));
+      setConfetti(true); setTimeout(() => setConfetti(false), 2000);
+    } else {
+      sndWrong();
+    }
+    if (outcome.updateSave) {
+      if (ok) setTCorrectCount((n) => n + 1);
+      updateSave((s) => applyTripAnswer(s, item.c, item.qType, ok, tAttempt, Date.now()));
+    }
+  };
+  const tripAnswer = (choice) => {
+    if (tPhase !== "answer" || tAnswerLockRef.current) return;
+    tAnswerLockRef.current = true;
+    const item = tripQuiz[tIdx];
+    setTPicked(choice);
+    finishTripAttempt(item, choice.id === item.c.id);
+  };
+  const tripMapAnswer = (tapped) => {
+    if (tPhase !== "answer" || tAnswerLockRef.current) return;
+    tAnswerLockRef.current = true;
+    const item = tripQuiz[tIdx];
+    setTPicked(tapped);
+    finishTripAttempt(item, tapped.id === item.c.id);
+  };
+  const tripRetry = () => {
+    tAnswerLockRef.current = false;
+    setTAttempt((n) => n + 1);
+    setTPicked(null);
+    setTOutcome(null);
+    setTripQuiz((prev) => {
+      const next = [...prev];
+      const item = next[tIdx];
+      next[tIdx] = item.choices ? { ...item, choices: shuffle(item.choices) } : item;
+      return next;
+    });
+    setTPhase("answer");
+  };
+  const tripNext = () => {
+    const isLast = tIdx + 1 >= tripQuiz.length;
+    if (isLast) {
+      // updateSave()のupdaterはReactの次のレンダーまで実行されないため、
+      // 表示用のスタンプ値はコミット済みの現在のsaveから同期的に算出する
+      const stampValue = computeStampValue(save, trip);
+      updateSave((s) => finishTrip(s, trip, Date.now()));
+      setTStampResult({ stampValue, correctCount: tCorrectCount, total: tripQuiz.length });
+      setScreen("tripResult");
+    } else {
+      const nextIdx = tIdx + 1;
+      const nextItem = tripQuiz[nextIdx];
+      setTIdx(nextIdx); setTAttempt(1); setTOutcome(null); setTPicked(null);
+      setTPhase(nextItem.qType === "meet2" ? "cardintro" : "zoom");
+    }
+  };
+  const tripAdvanceOrRetry = () => {
+    if (tOutcome && tOutcome.retry) tripRetry();
+    else tripNext();
   };
 
   /* --- たいりくせいは：ターン演出 → ズーム → 回答 --- */
@@ -747,6 +880,7 @@ export default function App() {
           </div>
         </div>
         <div style={{ maxWidth: 480, margin: "0 auto", display: "grid", gap: 10 }}>
+          <BigBtn color="#3dae7a" onClick={() => setScreen("tripHome")} style={{ fontSize: 22 }}>🧳 せかいのたび</BigBtn>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <BigBtn color="#2f9fd4" onClick={() => chooseMode("name")} style={{ fontSize: 17 }}>🗺️ せかい国名<br/>モード</BigBtn>
             <BigBtn color="#7a5fd4" onClick={() => chooseMode("capital")} style={{ fontSize: 17 }}>🏛️ しゅと<br/>モード</BigBtn>
@@ -958,6 +1092,287 @@ export default function App() {
           )}
           <div style={{ display: "grid", gap: 9, marginTop: 10 }}>
             <BigBtn color="#2f9fd4" onClick={() => startQuiz(quizMode, quizRegion)}>もういっかい あそぶ！</BigBtn>
+            <BigBtn color="#8aa0b8" onClick={() => setScreen("home")}>🏠 ホーム</BigBtn>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  /* ===== せかいのたび：パックせんたく ===== */
+  if (screen === "tripHome") {
+    const packs = availablePacks(save);
+    const locked = nextLockedPack(save);
+    return (
+      <div style={wrap}><style>{css}</style>
+        <div style={{ maxWidth: 480, margin: "0 auto" }}>
+          <h2 style={{ textAlign: "center", color: "#3dae7a", fontSize: 24, fontWeight: 900, margin: "8px 0" }}>🧳 せかいのたび</h2>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#5a7ba0", textAlign: "center", marginBottom: 10 }}>
+            <Ruby t={"パックを えらんで たびに でよう！"} />
+          </div>
+          <div style={{ display: "grid", gap: 8 }}>
+            {packs.map((tp) => {
+              const stamp = (save.trips.stamps && save.trips.stamps[tp.id]) || 0;
+              const packCs = tp.ids.map((id) => byId.get(id)).filter(Boolean);
+              return (
+                <button key={tp.id} onClick={() => startTrip(tp)} style={{
+                  display: "flex", alignItems: "center", gap: 10, padding: "10px 12px",
+                  borderRadius: 16, border: "2.5px solid #bcd2e8", background: "#fff",
+                  fontFamily: "inherit", cursor: "pointer", textAlign: "left",
+                }}>
+                  <span style={{ fontSize: 30 }}>{tp.icon}</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 900, fontSize: 15 }}>{tp.label}</div>
+                    <div style={{ display: "flex", gap: 4, marginTop: 3 }}>
+                      {packCs.map((c) => <Flag key={c.id} c={c} w={24} />)}
+                    </div>
+                  </div>
+                  <span style={{ fontSize: 22 }}>{stamp >= 3 ? "🏅" : stamp >= 1 ? "🎫" : "☆"}</span>
+                </button>
+              );
+            })}
+            {locked && (
+              <div style={{
+                display: "flex", alignItems: "center", gap: 10, padding: "10px 12px",
+                borderRadius: 16, border: "2.5px dashed #c3d2e0", background: "#eef2f7", opacity: 0.8,
+              }}>
+                <span style={{ fontSize: 30, filter: "grayscale(1)" }}>🔒</span>
+                <div style={{ flex: 1, fontWeight: 800, fontSize: 13, color: "#8a9ab0" }}>
+                  つぎの たびは まだ ひみつ…
+                </div>
+              </div>
+            )}
+          </div>
+          <BigBtn color="#8aa0b8" onClick={() => setScreen("home")} style={{ marginTop: 12 }}>🏠 ホームへ もどる</BigBtn>
+        </div>
+      </div>
+    );
+  }
+
+  /* ===== せかいのたび：セッション ===== */
+  if (screen === "trip" && tripQuiz.length > 0) {
+    const item = tripQuiz[tIdx];
+    const c = item.c;
+    const qType = item.qType;
+    const isMeet = qType === "meet2";
+    const isMap = qType === "map";
+    const isCorrect = tPicked && tPicked.id === c.id;
+    const SECTION_COLOR = { "であい": "#3dae7a", "みわける": "#2f9fd4", "ちょうせん": "#e8484f", "おかえり": "#a86fe0" };
+    const sectionColor = SECTION_COLOR[item.section];
+
+    /* --- であい：くにカード導入（タップでスキップ可） --- */
+    if (isMeet && tPhase === "cardintro") {
+      return (
+        <div style={{ ...wrap, minHeight: "auto", height: "100dvh", padding: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}
+          onClick={skipTripIntro}>
+          <style>{css}</style>
+          <div style={{ flex: "none", textAlign: "center", padding: "6px 0 4px", fontWeight: 900, fontSize: 13, color: sectionColor }}>
+            🧳 であい（{tIdx + 1}/{tripQuiz.length}）
+          </div>
+          <div style={{ flex: "none", padding: "0 12px", maxWidth: 480, width: "100%", margin: "0 auto", boxSizing: "border-box" }}>
+            <WorldMap view={viewForCountry(c)} target={c} revealed height="24vh" />
+          </div>
+          <div style={{ flex: 1, overflowY: "auto", padding: "10px 14px", maxWidth: 480, width: "100%", margin: "0 auto", boxSizing: "border-box" }}>
+            <div style={{ ...card, margin: 0, textAlign: "center" }}>
+              <Flag c={c} w={104} />
+              <div style={{ fontSize: 25, fontWeight: 900, marginTop: 8 }}>
+                {c.k ? <ruby>{c.n}<rt style={{ fontSize: "0.5em", color: "#7a8aa0" }}>{c.k}</rt></ruby> : c.n}
+              </div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: "#5a7ba0", marginTop: 4 }}>🏛️ <Ruby t={c.cap} /></div>
+              {c.h && <div style={{ fontSize: 13.5, fontWeight: 700, color: "#5a7ba0", marginTop: 8 }}>{HINT_ICON[c.h[0].t] || ""} <Ruby t={c.h[0].s} /></div>}
+            </div>
+          </div>
+          <div style={{ flex: "none", padding: "10px 14px calc(10px + env(safe-area-inset-bottom))" }}>
+            <div style={{ maxWidth: 480, margin: "0 auto" }}>
+              <BigBtn color="#3dae7a" onClick={skipTripIntro}>つぎへ ▶（タップでOK）</BigBtn>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    /* --- ズーム〜こたえ合わせ --- */
+    const view = tPhase === "feedback" ? viewForCountry(c)
+      : isMap ? CONT_VIEW[c.cont]
+      : (tZoomed ? viewForCountry(c) : WORLD_VIEW);
+    return (
+      <div style={{ ...wrap, minHeight: "auto", height: "100dvh", padding: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}
+        onClick={tPhase === "zoom" ? skipTripZoom : undefined}>
+        <style>{css}</style>
+        {confetti && <Confetti />}
+
+        <div style={{ flex: "none", display: "flex", justifyContent: "center", alignItems: "center", gap: 6, padding: "6px 0 4px" }}>
+          {tripQuiz.map((_, i) => (
+            <div key={i} style={{
+              width: i === tIdx ? 14 : 10, height: i === tIdx ? 14 : 10, borderRadius: "50%",
+              background: i < tIdx ? "#4cae6e" : i === tIdx ? sectionColor : "#c9d8e8", transition: "all .3s",
+            }} />
+          ))}
+        </div>
+        <div style={{ flex: "none", textAlign: "center", fontWeight: 900, fontSize: 12.5, color: sectionColor, marginBottom: 2 }}>
+          {item.section === "であい" ? "🧳 であい" : item.section === "みわける" ? "🔍 みわける" : item.section === "ちょうせん" ? "🔥 ちょうせん" : "🔄 おかえり"}
+          {tAttempt > 1 && <span style={{ marginLeft: 8, color: "#d05a4a" }}>もういちど！</span>}
+        </div>
+
+        <div style={{ flex: "none", padding: "0 12px", position: "relative", maxWidth: 480, width: "100%", margin: "0 auto", boxSizing: "border-box" }}>
+          {qType === "flag" && tPhase !== "feedback" ? (
+            <div style={{
+              height: "24vh", borderRadius: 20, background: "linear-gradient(180deg,#fff,#eef4fb)",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              boxShadow: "inset 0 2px 10px rgba(40,90,140,.12)",
+            }}>
+              <Flag c={c} w={150} style={{ animation: "floaty 2.4s ease-in-out infinite" }} />
+            </div>
+          ) : isMeet ? (
+            <div style={{
+              height: "24vh", borderRadius: 20, background: "linear-gradient(180deg,#fff,#eef4fb)",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              boxShadow: "inset 0 2px 10px rgba(40,90,140,.12)",
+            }}>
+              <Flag c={c} w={150} />
+            </div>
+          ) : (
+            <WorldMap
+              view={view}
+              target={isMap && tPhase !== "feedback" ? null : c}
+              revealed={tPhase === "feedback"}
+              height="24vh"
+              selected={isMap && tPicked ? tPicked : null}
+              onTapCountry={isMap && tPhase === "answer" ? tripMapAnswer : null}
+              tappableCont={isMap ? c.cont : null}
+            />
+          )}
+          {tPhase === "feedback" && (
+            <div style={{
+              position: "absolute", left: "50%", bottom: 10, transform: "translateX(-50%)",
+              background: isCorrect ? "#3f9c3a" : "#d05a4a", color: "#fff", padding: "6px 18px",
+              borderRadius: 999, fontWeight: 900, fontSize: 17, whiteSpace: "nowrap",
+              boxShadow: "0 3px 8px rgba(0,0,0,.25)", animation: "pop .35s",
+            }}>
+              {isCorrect ? `⭕ ${praise}` : "❌ ざんねん！"}
+            </div>
+          )}
+        </div>
+
+        <div style={{ flex: 1, overflowY: "auto", WebkitOverflowScrolling: "touch", padding: "8px 14px", paddingBottom: tPhase === "feedback" ? 88 : 10, maxWidth: 480, width: "100%", margin: "0 auto", boxSizing: "border-box" }}>
+          <div style={{ ...card, margin: 0, padding: "10px 12px", opacity: tShowQ || tPhase === "feedback" ? 1 : 0, transition: "all .3s" }}>
+            <div style={{ fontWeight: 900, fontSize: 15, color: sectionColor, marginBottom: 6 }}>
+              {isMeet && <Ruby t={"このこっき、なんてくに？"} />}
+              {!isMeet && qType === "name" && <Ruby t={"ここは ど〜こだ？"} />}
+              {!isMeet && qType === "capital" && <Ruby t={"この {国|くに}の しゅとは ど〜こだ？"} />}
+              {!isMeet && qType === "flag" && <Ruby t={"この こっきは どこの {国|くに}かな？"} />}
+              {isMap && <Ruby t={"この {国|くに}を ちずで タップしてね"} />}
+            </div>
+
+            {!isMeet && qType !== "flag" && !isMap && (
+              <div style={{ display: "flex", gap: 12, alignItems: qType === "capital" ? "center" : "flex-start" }}>
+                <Flag c={c} w={62} style={{ flex: "none", marginTop: 2 }} />
+                {qType === "name" ? (
+                  <ul style={{ margin: 0, paddingLeft: 14, fontSize: 13.5, lineHeight: 1.7, fontWeight: 700, flex: 1 }}>
+                    {item.section === "おかえり" && <li style={{ color: "#a86fe0" }}>🔄 まえに でてきた {"国"}だよ</li>}
+                    <li style={{ color: "#9a6b2f" }}>🏛️ しゅとは <Ruby t={c.cap} /></li>
+                  </ul>
+                ) : (
+                  <div style={{ flex: 1, fontSize: 21, fontWeight: 900 }}>
+                    {c.k ? <ruby>{c.n}<rt style={{ fontSize: "0.5em", color: "#7a8aa0" }}>{c.k}</rt></ruby> : c.n}
+                  </div>
+                )}
+              </div>
+            )}
+            {isMap && (
+              <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+                <Flag c={c} w={62} style={{ flex: "none", marginTop: 2 }} />
+                <ul style={{ margin: 0, paddingLeft: 14, fontSize: 13.5, lineHeight: 1.7, fontWeight: 700, flex: 1 }}>
+                  {c.h && <li>{HINT_ICON[c.h[0].t] || ""} <Ruby t={c.h[0].s} /></li>}
+                  <li>{CONT[c.cont].label}に あるよ</li>
+                </ul>
+              </div>
+            )}
+
+            {item.choices && (
+              <div style={{ display: "grid", gap: 6, marginTop: 8 }}>
+                {item.choices.map((ch) => {
+                  const label = qType === "capital" ? ch.cap : null;
+                  let bg = "#fff", border = "#bcd2e8";
+                  if (tPhase === "feedback") {
+                    if (ch.id === c.id) { bg = "#e0f6db"; border = "#7ac974"; }
+                    else if (tPicked && ch.id === tPicked.id) { bg = "#fde3df"; border = "#ef8a7a"; }
+                  }
+                  return (
+                    <button key={ch.id} onClick={() => tripAnswer(ch)} disabled={tPhase !== "answer"}
+                      style={{
+                        padding: "7px 10px", borderRadius: 13, border: `2.5px solid ${border}`,
+                        background: bg, fontSize: 16, fontWeight: 800, fontFamily: "inherit",
+                        cursor: tPhase === "answer" ? "pointer" : "default", textAlign: "center", color: "#2a3a4a",
+                        display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                      }}>
+                      {label
+                        ? <Ruby t={label} />
+                        : ch.k ? <ruby>{ch.n}<rt style={{ fontSize: "0.5em", color: "#7a8aa0" }}>{ch.k}</rt></ruby> : ch.n}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            {isMap && !item.choices && tPhase === "answer" && (
+              <div style={{ textAlign: "center", fontSize: 12.5, fontWeight: 700, color: "#8a9ab0", marginTop: 8 }}>
+                ↑ うえの ちずを タップしてね
+              </div>
+            )}
+
+            {tPhase === "feedback" && (
+              <div style={{ marginTop: 8, textAlign: "center", fontSize: 13.5, fontWeight: 800, color: "#5a7ba0" }}>
+                {!isCorrect && (
+                  <div>こたえは「{qType === "capital" ? <Ruby t={c.cap} /> : c.n}」だよ。つぎは きっと できる！</div>
+                )}
+                <div style={{ marginTop: 6, display: "flex", justifyContent: "center", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                  <Flag c={c} w={44} />
+                  <b>{c.n}</b>
+                  <span>🏛️ <Ruby t={c.cap} /></span>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {tPhase === "feedback" && (
+          <div style={{
+            position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 40,
+            padding: "12px 14px calc(10px + env(safe-area-inset-bottom))",
+            background: "linear-gradient(180deg, rgba(215,236,255,0), #d7ecff 45%)",
+          }}>
+            <div style={{ maxWidth: 480, margin: "0 auto" }}>
+              <BigBtn color={tOutcome && tOutcome.retry ? "#d05a4a" : "#2f9fd4"} onClick={tripAdvanceOrRetry}>
+                {tOutcome && tOutcome.retry ? "もういちど ちょうせん！ 🔁"
+                  : tIdx + 1 >= tripQuiz.length ? "たびの けっかを みる！" : "つぎの もんだいへ ▶"}
+              </BigBtn>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  /* ===== せかいのたび：けっか ===== */
+  if (screen === "tripResult" && tStampResult) {
+    const gold = tStampResult.stampValue >= 3;
+    return (
+      <div style={wrap}><style>{css}</style>
+        <Confetti count={gold ? 44 : 28} />
+        <div style={{ ...card, textAlign: "center", marginTop: 26 }}>
+          <div style={{ fontSize: 15, fontWeight: 800, color: "#5a7ba0" }}>たび クリア！</div>
+          <div style={{ fontSize: 60, margin: "10px 0", animation: "pop .5s" }}>{gold ? "🏅" : "🎫"}</div>
+          <div style={{ fontSize: 22, fontWeight: 900, color: "#3dae7a" }}>
+            {trip ? trip.label : ""}
+          </div>
+          <div style={{ fontSize: 15, fontWeight: 700, marginTop: 6, color: "#5a7ba0" }}>
+            {tStampResult.total}もんちゅう {tStampResult.correctCount}もん いっぱつせいかい！
+          </div>
+          <div style={{ fontSize: 14, fontWeight: 800, marginTop: 6, color: gold ? "#e8a000" : "#5a7ba0" }}>
+            {gold ? "🏅 きんいろスタンプ げっと！3だんはしご かんとう！" : "🎫 パスポートスタンプを ゲット！"}
+          </div>
+          <div style={{ display: "grid", gap: 9, marginTop: 14 }}>
+            <BigBtn color="#3dae7a" onClick={() => setScreen("tripHome")}>🧳 つぎの たびへ</BigBtn>
             <BigBtn color="#8aa0b8" onClick={() => setScreen("home")}>🏠 ホーム</BigBtn>
           </div>
         </div>
