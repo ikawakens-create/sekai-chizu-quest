@@ -82,8 +82,12 @@ src/
   data/hints-*.js     # ヒント980個（5ファイル・大陸別）。修正時は該当大陸ファイルのみ
 build-maps.mjs        # 地図データ生成（Natural Earth 50m → Equal Earth SVG）
 build-artifact.mjs    # Claude Artifact用の単一JSX生成（npm run build:artifact）
-.github/workflows/deploy.yml  # 自動デプロイ（編集不要）
+.github/workflows/deploy.yml  # 自動デプロイ（編集不要。build:artifactは含まない）
 ```
+
+**`npm run build` と `npm run build:artifact` は別物**:
+- `npm run build`（esbuild）… `pwa/app.js` を再生成する。公開・デプロイ対象はこちら。ソースから再ビルドしてバイト一致することを確認する。
+- `npm run build:artifact`（`build-artifact.mjs`）… claude.ai用の単一ファイル `sekai-chizu-quest.jsx` を生成する。`src/data/*` の各モジュールを1ファイルにインライン化し、React以外のローカルimportが1つも残っていない状態になって初めて成功する。インライン化し忘れたモジュールが残っていれば、書き出さずに未処理モジュール名を挙げてエラーで失敗する（＝壊れた成果物を黙って出さない）。CI（deploy.yml）には組み込まれていない、ローカル専用のユーティリティ。
 
 ## 7. 品質ゲート（変更をpushする前に必ず）
 

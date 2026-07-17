@@ -115,5 +115,14 @@ src = importLine +
   "\n/* ======== セーブv2（window.storage版） ======== */\n" + saveInline + "\n" +
   src.slice(importLine.length);
 
+/* 5) ガード: Reactインポート以外のローカルimport（"./..."）が1つでも残っていたら、
+   単一ファイルとして未完成（＝壊れた成果物）とみなし書き出さずに失敗させる。
+   複数行のimport（`import {\n ... \n} from "./x.js";`）も拾えるよう[\s\S]で行またぎに対応。 */
+const remainingImportRe = /import\s+[\s\S]*?\s+from\s+"(\.\/[^"]+)";/g;
+const remainingModules = [...src.matchAll(remainingImportRe)].map((m) => m[1]);
+if (remainingModules.length > 0) {
+  throw new Error("単一ファイル未完成：以下のローカルimportが未インラインです → " + remainingModules.join(", "));
+}
+
 fs.writeFileSync("sekai-chizu-quest.jsx", src);
 console.log("artifact生成 OK:", (fs.statSync("sekai-chizu-quest.jsx").size / 1024).toFixed(0) + "KB");
