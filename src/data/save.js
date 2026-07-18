@@ -12,6 +12,10 @@ const emptyProfile = (name, voice) => ({
   trips: { done: [], stamps: {} },
   daily: {},
   recent: [], // 直近の初回解答結果 {ok:boolean} を先頭にpushする20件リングバッファ
+  /* HANDOFF v2.3 §8.1: パスポート（stamps=国ごとの押印記録、bonus=しんさかんタイムの
+     特別スタンプid配列、routes=旅の航跡）。本PRではstamp.jsのapplyStampが書き込む先として
+     追加するのみで、閲覧用のpassport画面・schemaVersion移行はPR4のスコープ。 */
+  passport: { stamps: {}, bonus: [], routes: [] },
 });
 
 export const emptySaveV2 = () => ({
@@ -61,6 +65,11 @@ export function mergeSaveV2(raw) {
       },
       daily: rp.daily && typeof rp.daily === "object" ? rp.daily : {},
       recent: Array.isArray(rp.recent) ? rp.recent.slice(0, 20) : [],
+      passport: {
+        stamps: rp.passport && typeof rp.passport.stamps === "object" ? rp.passport.stamps : {},
+        bonus: Array.isArray(rp.passport && rp.passport.bonus) ? rp.passport.bonus : [],
+        routes: Array.isArray(rp.passport && rp.passport.routes) ? rp.passport.routes : [],
+      },
     };
   };
   if (!raw || typeof raw !== "object") return base;

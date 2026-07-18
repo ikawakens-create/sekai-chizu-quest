@@ -76,3 +76,17 @@ export function makeStamp(country, dateStr, opts = {}) {
   ${goldLayer}
 </svg>`;
 }
+
+/* HANDOFF v2.3 §6.3: 入国成功で必ず押印。再訪は同スタンプに日付を追記（同日の重複追記は
+   しない）。paspoort上は最新日付を表示しタップで全日付、の元データをここで確定する。
+   goldは一度trueになったら以後false扱いで戻さない（マスター降格は無い前提の書き込み側規則）。
+   save.passportが未初期化（古いprogOfのみのsave等）でも壊れないよう存在を補う。 */
+export function applyStamp(save, id, dateStr, gold = false) {
+  const passport = save.passport || { stamps: {}, bonus: [], routes: [] };
+  const prev = passport.stamps[id] || { dates: [], gold: false };
+  const dates = prev.dates.includes(dateStr) ? prev.dates : [...prev.dates, dateStr];
+  return {
+    ...save,
+    passport: { ...passport, stamps: { ...passport.stamps, [id]: { dates, gold: prev.gold || gold } } },
+  };
+}
