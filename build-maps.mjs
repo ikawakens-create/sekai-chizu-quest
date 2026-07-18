@@ -47,13 +47,15 @@ const microList = [];
 
 for (const c of targets) {
   const f = geoById.get(Number(c.ccn3));
-  let d = "", cx, cy, zoom = 4, micro = false;
+  let d = "", cx, cy, zoom = 4, micro = false, bw = 0, bh = 0;
 
   if (f) {
     const raw = path(f);
     d = raw ? round(raw) : "";
     const b = path.bounds(f);
     const w = b[1][0] - b[0][0], h = b[1][1] - b[0][1];
+    bw = Math.round(w * 10) / 10;
+    bh = Math.round(h * 10) / 10;
     const ctr = path.centroid(f);
     cx = Math.round(ctr[0] * 10) / 10;
     cy = Math.round(ctr[1] * 10) / 10;
@@ -67,6 +69,7 @@ for (const c of targets) {
     cy = Math.round(p[1] * 10) / 10;
     zoom = 18;
     micro = true;
+    bw = 0; bh = 0;
     noPoly.push(c.cca3);
   }
 
@@ -75,7 +78,7 @@ for (const c of targets) {
     cont: contOf(c), flag: c.cca2.toLowerCase(),
     capEn: (c.capital && c.capital[0]) || "",
     area: Math.round(c.area),
-    d, cx, cy, zoom, micro,
+    d, cx, cy, zoom, micro, bw, bh,
   });
 }
 out.sort((a, b) => (a.cont === b.cont ? b.area - a.area : a.cont.localeCompare(b.cont)));
