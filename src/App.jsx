@@ -9,12 +9,29 @@ import { HINTS_OCEANIA } from "./data/hints-oceania.js";
 import { createMakeChoices } from "./data/choices.js";
 import { emptySaveV2, loadSaveV2, persistSaveV2, pushRecent, hiddenDifficultyOf } from "./data/save.js";
 import { FLAG_GROUPS } from "./data/flag-groups.js";
+import { TRIPS } from "./data/trips.js";
+/* HANDOFF v2.3 §8.1/§2.5: trip.js（既存モード・v1.1・name/flag/capの3スロット）と
+   shinsa.js（しんさ3れん・v2.3・flag/name/locの3スロット）はstageOf/progOfが同名で
+   意味が異なるため、両方importする本ファイルでは必ずエイリアスを付けて混同を防ぐ
+   （PR2bからの申し送り）。legacy*は既存モード（ソロクイズ・たいりくせいは）専用、
+   sr*は本PRで結線するたびフロー（にゅうこくしんさ）専用。 */
 import {
-  stageOf, availablePacks, nextLockedPack, buildTripSession, pickMeetWrong,
-  tripAnswerOutcome, applyTripAnswer, finishTrip, computeStampValue,
+  progOf as legacyProgOf, masteredSlotCount as legacyMasteredSlotCount, MASTER_AT,
+  availablePacks, nextLockedPack,
+  isPackCleared, packDoneIds, buildTripVisits, gateSceneFor,
 } from "./data/trip.js";
 import {
+  SHINSA_SLOTS, stageOf as srStageOf, progOf as srProgOf, isMastered as srIsMastered,
+  buildVisitQueue, advanceVisitQueue, applyShinsaSlotAnswer, finishVisitSrs,
+} from "./data/shinsa.js";
+import {
+  buildCustomsQueue, advanceCustomsQueue, applyCustomsAnswer,
+} from "./data/customs.js";
+import { souvenirOf, SOUVENIR_NOTES } from "./data/souvenirs.js";
+import { makeStamp, applyStamp } from "./data/stamp.js";
+import {
   viewForCountry as computeCountryView, viewForCountries, showInsetFor, applyPinchZoom, highlightModeFor,
+  layoutPins, mapUnitsForScreenPx, PIN_MIN_TAP_PX,
 } from "./data/mapView.js";
 const HINTS = { ...DEMO_HINTS, ...HINTS_ASIA, ...HINTS_EUROPE, ...HINTS_AFRICA, ...HINTS_AMERICAS, ...HINTS_OCEANIA };
 
@@ -250,7 +267,8 @@ function CountryInset({ c, s, tx, ty }) {
    二本指ピンチ中はview propを一時的に上書きする「手動view」をローカルstateで保持し、
    resetKeyが変わった（次の問題／画面遷移）タイミングで自動的に破棄し、自動フレーミングへ戻す。 */
 function WorldMap({ view = WORLD_VIEW, target, revealed, animate = true, height = "30vh",
-                    masteryColor, onTapCountry, tappableCont, selected, pinchZoom, resetKey }) {
+                    masteryColor, onTapCountry, tappableCont, selected, pinchZoom, resetKey,
+                    pins, onTapPin }) {
   const svgRef = useRef(null);
   const pointersRef = useRef(new Map());
   const gestureRef = useRef(null);
@@ -292,6 +310,19 @@ function WorldMap({ view = WORLD_VIEW, target, revealed, animate = true, height 
     pointersRef.current.delete(e.pointerId);
     if (pointersRef.current.size < 2) gestureRef.current = null;
   };
+
+  /* §2.1: タップ判定は最低56×56px相当。固定SVG単位ではなく、実際に描画されている
+     コンテナの物理サイズ(viewportShortPx)から逆算する（mapUnitsForScreenPx）。 */
+  const pinTapRadius = () => {
+    const svg = svgRef.current;
+    if (!svg) return 20;
+    const rect = svg.getBoundingClientRect();
+    if (!rect.width || !rect.height) return 20;
+    const viewportShortPx = Math.min(rect.width, rect.height);
+    const mapShortSide = Math.min(MAP_DIMS.w, MAP_DIMS.h);
+    return mapUnitsForScreenPx(PIN_MIN_TAP_PX, viewportShortPx, mapShortSide, s);
+  };
+  const PIN_COLOR = { neutral: "#ff5c46", picked: "#ffb020", correct: "#3f9c3a", wrong: "#d05a4a" };
 
   return (
     <div style={{
@@ -361,6 +392,21 @@ function WorldMap({ view = WORLD_VIEW, target, revealed, animate = true, height 
               {plain(target.n)}
             </text>
           )}
+          {/* §2.1 ピン方式の位置問題: 重なるピンはずらして引き出し線で実位置と接続（layoutPins） */}
+          {pins && pins.map((p) => (
+            <g key={"pin-" + p.id}>
+              {p.jittered && (
+                <line x1={p.x} y1={p.y} x2={p.pinX} y2={p.pinY} stroke="#c0392b"
+                  strokeWidth={1.2 / s} strokeDasharray={`${3 / s} ${2 / s}`} opacity={0.75} />
+              )}
+              <circle cx={p.pinX} cy={p.pinY} r={9 / s} fill={PIN_COLOR[p.state] || PIN_COLOR.neutral}
+                stroke="#fff" strokeWidth={1.6 / s} />
+              {onTapPin && (
+                <circle cx={p.pinX} cy={p.pinY} r={pinTapRadius()} fill="rgba(255,255,255,0.001)"
+                  style={{ cursor: "pointer" }} onClick={() => onTapPin(p.id)} />
+              )}
+            </g>
+          ))}
         </g>
         {inset && <CountryInset c={inset} s={s} tx={tx} ty={ty} />}
       </svg>
@@ -409,6 +455,7 @@ const sndReveal = (ra) => {
 const shuffle = (arr) => { const a = [...arr]; for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
 const PRAISE = ["ピンポーン！", "すごい！", "てんさい！", "やったね！", "かんぺき！", "はかせみたい！"];
+const todayDateStr = () => new Date().toISOString().slice(0, 10);
 
 function Confetti({ count = 24 }) {
   const items = ["🎉", "⭐", "🌍", "✨", "🎊"];
@@ -442,13 +489,14 @@ function BigBtn({ children, onClick, color = "#3d8fe0", disabled, style }) {
 
 /* ---------- セーブ（3スロット習熟度・プロフィール2枠） ---------- */
 
+/* progOf/masteredSlots（name/flag/capの3スロット）はtrip.jsのlegacyProgOf/legacyMasteredSlotCountを
+   そのまま使う（ソロクイズ・たいりくせいは専用。しんさ3れん用のsrProgOfとは別物・混同禁止）。 */
 const SLOTS = ["name", "flag", "cap"];
 const SLOT_LABEL = { name: "くにのなまえ", flag: "こっき", cap: "しゅと" };
 const SLOT_ICON = { name: "🗺️", flag: "🚩", cap: "🏛️" };
-const MASTER_AT = 2; /* スロットは2回正解でマスター */
 const slotOfQ = (qt) => (qt === "capital" ? "cap" : qt === "flag" ? "flag" : "name");
-const progOf = (save, id) => save.prog[id] || { name: 0, flag: 0, cap: 0 };
-const masteredSlots = (save, id) => SLOTS.filter((s) => progOf(save, id)[s] >= MASTER_AT).length;
+const progOf = legacyProgOf;
+const masteredSlots = legacyMasteredSlotCount;
 
 /* ---------- 出題生成 ---------- */
 const N_Q = 10;
@@ -563,19 +611,30 @@ export default function App() {
   const [gachaMode, setGachaMode] = useState("normal");  // normal | rainbow | celeb
   const [gachaFrom, setGachaFrom] = useState("solo");    // solo | vs
 
-  /* せかいのたび（10問=であい3/みわける4/ちょうせん2/おかえり1・3段はしご・再出題ルール） */
-  const [trip, setTrip] = useState(null);         // 選択中のパック
-  const [tripQuiz, setTripQuiz] = useState([]);    // 選択肢まで付与済みの10問セッション
-  const [tIdx, setTIdx] = useState(0);
-  const [tAttempt, setTAttempt] = useState(1);     // 同一問題への何回目の解答か（1=初回）
-  const [tOutcome, setTOutcome] = useState(null);  // tripAnswerOutcome() の結果
-  const [tCorrectCount, setTCorrectCount] = useState(0); // 初回正解数（けっか表示用）
-  const [tPhase, setTPhase] = useState("cardintro"); // cardintro | zoom | answer | feedback
-  const [tPicked, setTPicked] = useState(null);
-  const [tZoomed, setTZoomed] = useState(false);
-  const [tShowQ, setTShowQ] = useState(false);
-  const [tStampResult, setTStampResult] = useState(null); // { stampValue, correctCount, total }
-  const tAnswerLockRef = useRef(false);
+  /* せかいのたび（HANDOFF v2.3 §1: にゅうこくしんさ→のりつぎ→ぜいかん→パスポートスタンプ） */
+  const [tripPack, setTripPack] = useState(null);          // 選択中パック
+  const [tripVisits, setTripVisits] = useState([]);         // 今回の訪問国3件（パック国2＋のりつぎ1）
+  const [tripTransferId, setTripTransferId] = useState(null);
+  const [tripVisitIdx, setTripVisitIdx] = useState(0);      // 訪問中の国index（0〜2）
+  const [tripScene, setTripScene] = useState("gate");       // gate|visit|welcome|customsIntro|customs|arrival
+  const [tripQ, setTripQ] = useState(null);                 // { queue, idx, firstAttemptResults }（advanceVisitQueue用）
+  const [tripSubPhase, setTripSubPhase] = useState("zoom");  // 1サブ問内: zoom|answer|feedback
+  /* feedback表示中はtripQ.idxが既に次(or末尾=queue.length)へ進んでいるため、
+     queue[idx]では答えた問題を参照できない。答えた瞬間のitemを別に保持する */
+  const [tripAnsweredItem, setTripAnsweredItem] = useState(null);
+  const [tripPicked, setTripPicked] = useState(null);
+  const [tripLastOk, setTripLastOk] = useState(false);
+  const [tripZoomed, setTripZoomed] = useState(false);
+  const [tripShowQ, setTripShowQ] = useState(false);
+  const [tripStamps, setTripStamps] = useState([]);         // このたびで押したスタンプ [{id,gold}]
+  const tripLockRef = useRef(false);
+
+  const [customsQ, setCustomsQ] = useState(null);           // { queue, idx }（advanceCustomsQueue用）
+  const [customsPhase, setCustomsPhase] = useState("answer"); // answer|feedback
+  const [customsAnsweredItem, setCustomsAnsweredItem] = useState(null); // tripAnsweredItemと同じ理由
+  const [customsPicked, setCustomsPicked] = useState(null);
+  const [customsLastOk, setCustomsLastOk] = useState(false);
+  const customsLockRef = useRef(false);
 
   useEffect(() => { setSaveDoc(loadSaveV2()); }, []);
   const updateSave = useCallback((up) => {
@@ -689,118 +748,158 @@ export default function App() {
     } else { setQIdx((i) => i + 1); setPicked(null); setPhase("zoom"); }
   };
 
-  /* --- せかいのたび：セッション開始（§5.2） --- */
+  /* パック解放判定（unlockedTierMax/availablePacks/nextLockedPack）用のsave.trips.doneは
+     永続化せず、しんさ3れんのstageOf(≥1)から都度算出する（trip.js packDoneIds/§8.3）。 */
+  const isVisitedCountry = useCallback((id) => srStageOf(save, id) >= 1, [save]);
+  const packUnlockSave = useMemo(() => ({
+    ...save, trips: { ...save.trips, done: packDoneIds(TRIPS, isVisitedCountry) },
+  }), [save, isVisitedCountry]);
+
+  /* --- せかいのたび：訪問1件分のキュー構築（§2/§2.5・のりつぎは再訪扱いでshinsa.jsに委譲） --- */
+  const startTripVisit = (idx, visits, saveNow) => {
+    const country = visits[idx];
+    const p = srProgOf(saveNow, country.id);
+    /* §8.1「loc:0退行の救済」: name/flagは既にあるのにlocだけ0（移行直後の既存マスター国や
+       中断挟みの再訪）は初回のばしょ問のみ2択にする（§8.1）。通常の新規国(全スロット0)には効かない */
+    const forceRescueLoc2Choice = p.loc === 0 && (p.name >= 1 || p.flag >= 1);
+    const queue = buildVisitQueue(country, COUNTRIES, FLAG_GROUPS, saveNow, {
+      hiddenDifficulty: hiddenDifficultyOf(saveNow.recent),
+      learnedIds: COUNTRIES.filter((c) => srStageOf(saveNow, c.id) >= 1).map((c) => c.id),
+      forceRescueLoc2Choice,
+      makeChoices,
+    });
+    setTripVisitIdx(idx);
+    setTripQ({ queue, idx: 0, firstAttemptResults: {} });
+    setTripPicked(null);
+    tripLockRef.current = false;
+    setTripSubPhase("zoom");
+    setTripScene("gate");
+  };
+
+  /* --- せかいのたび：セッション開始（§4のりつぎ選出＋§8.3パック2か国） --- */
   const startTrip = (pack) => {
     getCtx();
     const now = Date.now();
-    const raw = buildTripSession(COUNTRIES, save, pack, { now });
-    const withChoices = raw.map((item) => {
-      if (item.qType === "meet2") {
-        const wrong = pickMeetWrong(COUNTRIES, item.c, FLAG_GROUPS);
-        return { ...item, choices: shuffle([item.c, wrong]) };
-      }
-      if (item.qType === "map") return item; // 選択肢なし：地図タップで解答
-      const field = item.qType === "capital" ? "cap" : "name";
-      const opts = {
-        difficulty: hiddenDifficultyOf(save.recent),
-        learnedIds: COUNTRIES.filter((c) => stageOf(save, c.id) >= 1).map((c) => c.id),
-        flagGroups: FLAG_GROUPS,
-      };
-      return { ...item, choices: makeChoices(item.c, field, opts) };
-    });
-    setTrip(pack);
-    setTripQuiz(withChoices);
-    setTIdx(0); setTAttempt(1); setTOutcome(null); setTCorrectCount(0);
-    setTPicked(null); setTStampResult(null);
-    setTPhase(withChoices[0].qType === "meet2" ? "cardintro" : "zoom");
+    const transferEligible = COUNTRIES.filter((c) => isVisitedCountry(c.id) && !pack.ids.includes(c.id));
+    const { visits, transferId } = buildTripVisits(
+      pack, availablePacks(packUnlockSave), COUNTRIES, save, transferEligible,
+      { isVisited: isVisitedCountry, now }
+    );
+    setTripPack(pack);
+    setTripVisits(visits);
+    setTripTransferId(transferId);
+    setTripStamps([]);
+    startTripVisit(0, visits, save);
     setScreen("trip");
   };
 
-  /* たびのズーム演出（であい以外）。タップでスキップ可 */
+  /* にゅうこくしんさのズーム演出。タップでスキップ可（幕間・各サブ問とも共通） */
   useEffect(() => {
-    if (screen !== "trip" || tPhase !== "zoom") return;
-    const item = tripQuiz[tIdx];
-    if (!item) return;
-    setTZoomed(false); setTShowQ(false);
-    tAnswerLockRef.current = false;
-    const timers = [];
-    const showsMap = item.qType !== "flag";
-    if (showsMap) timers.push(setTimeout(() => setTZoomed(true), 450));
-    timers.push(setTimeout(() => { setTShowQ(true); setTPhase("answer"); }, showsMap ? 1500 : 600));
+    if (screen !== "trip" || tripScene !== "visit" || tripSubPhase !== "zoom" || !tripQ) return;
+    setTripZoomed(false); setTripShowQ(false);
+    tripLockRef.current = false;
+    const timers = [
+      setTimeout(() => setTripZoomed(true), 450),
+      setTimeout(() => { setTripShowQ(true); setTripSubPhase("answer"); }, 1300),
+    ];
     return () => timers.forEach(clearTimeout);
-  }, [screen, tPhase, tIdx, tripQuiz]);
+  }, [screen, tripScene, tripSubPhase, tripQ]);
 
   const skipTripZoom = () => {
-    if (tPhase !== "zoom") return;
-    setTZoomed(true); setTShowQ(true); setTPhase("answer");
+    if (tripSubPhase !== "zoom") return;
+    setTripZoomed(true); setTripShowQ(true); setTripSubPhase("answer");
   };
-  const skipTripIntro = () => {
-    if (tPhase !== "cardintro") return;
-    tAnswerLockRef.current = false;
-    setTShowQ(true); setTPhase("answer");
+  /* 幕間（にゅうこくしんさ／のりつぎ宣言）はタップで次へ */
+  const advanceFromGate = () => {
+    tripLockRef.current = false;
+    setTripSubPhase("zoom");
+    setTripScene("visit");
   };
 
-  const finishTripAttempt = (item, ok) => {
-    const outcome = tripAnswerOutcome(tAttempt, ok);
-    setTPhase("feedback");
-    setTOutcome(outcome);
-    if (ok) {
-      sndCorrect(); setPraise(pick(PRAISE));
-      setConfetti(true); setTimeout(() => setConfetti(false), 2000);
-    } else {
-      sndWrong();
+  /* --- しんさ3れん：1サブ問への解答（要件b: 初回結果の記録→キュー消化時に1回だけfinishVisitSrs） --- */
+  const tripSubAnswer = (chosenId, chosenForDisplay) => {
+    if (tripSubPhase !== "answer" || tripLockRef.current) return;
+    tripLockRef.current = true;
+    const item = tripQ.queue[tripQ.idx];
+    const country = tripVisits[tripVisitIdx];
+    const hiddenDifficulty = hiddenDifficultyOf(save.recent);
+    const result = advanceVisitQueue(tripQ, chosenId, COUNTRIES, FLAG_GROUPS, hiddenDifficulty);
+    setTripAnsweredItem(item);
+    setTripPicked(chosenForDisplay);
+    setTripLastOk(result.ok);
+    setTripSubPhase("feedback");
+    if (result.ok) { sndCorrect(); setPraise(pick(PRAISE)); setConfetti(true); setTimeout(() => setConfetti(false), 1800); }
+    else sndWrong();
+    updateSave((s) => applyShinsaSlotAnswer(s, country.id, item.slot, result.ok, item.attemptNumber));
+    if (result.done) {
+      // キューが完全に消化された（3スロットとも通過した）この一瞬だけfinishVisitSrsを呼ぶ
+      updateSave((s) => finishVisitSrs(s, country.id, result.firstAttemptResults, Date.now()));
     }
-    if (outcome.updateSave) {
-      if (ok) setTCorrectCount((n) => n + 1);
-      updateSave((s) => applyTripAnswer(s, item.c, item.qType, ok, tAttempt, Date.now()));
-    }
+    setTripQ({ queue: result.queue, idx: result.idx, firstAttemptResults: result.firstAttemptResults });
   };
-  const tripAnswer = (choice) => {
-    if (tPhase !== "answer" || tAnswerLockRef.current) return;
-    tAnswerLockRef.current = true;
-    const item = tripQuiz[tIdx];
-    setTPicked(choice);
-    finishTripAttempt(item, choice.id === item.c.id);
+  const tripFlagAnswer = (choice) => tripSubAnswer(choice.id, choice);
+  const tripPinAnswer = (id) => tripSubAnswer(id, id);
+
+  const tripSubNext = () => {
+    tripLockRef.current = false;
+    setTripPicked(null);
+    if (tripQ.idx < tripQ.queue.length) { setTripSubPhase("zoom"); return; }
+    // 3スロットとも通過＝入国成功。必ず押印する（§6.3）
+    const country = tripVisits[tripVisitIdx];
+    const gold = srIsMastered(save, country.id);
+    updateSave((s) => applyStamp(s, country.id, todayDateStr(), gold));
+    setTripStamps((prev) => [...prev, { id: country.id, gold }]);
+    setTripScene("welcome");
   };
-  const tripMapAnswer = (tapped) => {
-    if (tPhase !== "answer" || tAnswerLockRef.current) return;
-    tAnswerLockRef.current = true;
-    const item = tripQuiz[tIdx];
-    setTPicked(tapped);
-    finishTripAttempt(item, tapped.id === item.c.id);
-  };
-  const tripRetry = () => {
-    tAnswerLockRef.current = false;
-    setTAttempt((n) => n + 1);
-    setTPicked(null);
-    setTOutcome(null);
-    setTripQuiz((prev) => {
-      const next = [...prev];
-      const item = next[tIdx];
-      next[tIdx] = item.choices ? { ...item, choices: shuffle(item.choices) } : item;
-      return next;
+
+  /* --- ぜいかんけんさ（§5）：かえりみちの3問 --- */
+  const startCustoms = () => {
+    const todayIds = tripVisits.map((c) => c.id);
+    const queue = buildCustomsQueue(COUNTRIES, todayIds, save, souvenirOf, {
+      now: Date.now(), makeChoices,
     });
-    setTPhase("answer");
+    setCustomsQ({ queue, idx: 0 });
+    setCustomsPhase("answer");
+    setCustomsPicked(null);
+    customsLockRef.current = false;
+    setTripScene("customsIntro");
   };
-  const tripNext = () => {
-    const isLast = tIdx + 1 >= tripQuiz.length;
-    if (isLast) {
-      // updateSave()のupdaterはReactの次のレンダーまで実行されないため、
-      // 表示用のスタンプ値はコミット済みの現在のsaveから同期的に算出する
-      const stampValue = computeStampValue(save, trip);
-      updateSave((s) => finishTrip(s, trip, Date.now()));
-      setTStampResult({ stampValue, correctCount: tCorrectCount, total: tripQuiz.length });
-      setScreen("tripResult");
-    } else {
-      const nextIdx = tIdx + 1;
-      const nextItem = tripQuiz[nextIdx];
-      setTIdx(nextIdx); setTAttempt(1); setTOutcome(null); setTPicked(null);
-      setTPhase(nextItem.qType === "meet2" ? "cardintro" : "zoom");
-    }
+  const advanceFromCustomsIntro = () => setTripScene("customs");
+  const customsAnswer = (choice) => {
+    if (customsPhase !== "answer" || customsLockRef.current) return;
+    customsLockRef.current = true;
+    const item = customsQ.queue[customsQ.idx];
+    const todayIds = tripVisits.map((c) => c.id);
+    const hiddenDifficulty = hiddenDifficultyOf(save.recent);
+    const result = advanceCustomsQueue(customsQ, choice.id, COUNTRIES, hiddenDifficulty);
+    setCustomsAnsweredItem(item);
+    setCustomsPicked(choice);
+    setCustomsLastOk(result.ok);
+    setCustomsPhase("feedback");
+    if (result.ok) { sndCorrect(); setPraise(pick(PRAISE)); setConfetti(true); setTimeout(() => setConfetti(false), 1500); }
+    else sndWrong();
+    updateSave((s) => applyCustomsAnswer(s, item.countryId, result.ok, item.attemptNumber, todayIds, Date.now()));
+    setCustomsQ({ queue: result.queue, idx: result.idx });
   };
-  const tripAdvanceOrRetry = () => {
-    if (tOutcome && tOutcome.retry) tripRetry();
-    else tripNext();
+  const customsNext = () => {
+    customsLockRef.current = false;
+    setCustomsPicked(null);
+    if (customsQ.idx < customsQ.queue.length) { setCustomsPhase("answer"); return; }
+    updateSave((s) => ({
+      ...s,
+      passport: {
+        ...s.passport,
+        routes: [...s.passport.routes, { tripId: tripPack.id, ids: tripVisits.map((c) => c.id), date: todayDateStr() }],
+      },
+    }));
+    setTripScene("arrival");
+  };
+
+  /* であい/のりつぎの次の訪問へ、または最後ならぜいかんへ（§1） */
+  const advanceFromWelcome = () => {
+    const nextIdx = tripVisitIdx + 1;
+    if (nextIdx >= tripVisits.length) startCustoms();
+    else startTripVisit(nextIdx, tripVisits, save);
   };
 
   /* --- たいりくせいは：ターン演出 → ズーム（§2.2.2 2段ズーム） → 回答 --- */
@@ -1182,18 +1281,20 @@ export default function App() {
 
   /* ===== せかいのたび：パックせんたく ===== */
   if (screen === "tripHome") {
-    const packs = availablePacks(save);
-    const locked = nextLockedPack(save);
+    const packs = availablePacks(packUnlockSave);
+    const locked = nextLockedPack(packUnlockSave);
     return (
       <div style={wrap}><style>{css}</style>
         <div style={{ maxWidth: 480, margin: "0 auto" }}>
           <h2 style={{ textAlign: "center", color: "#3dae7a", fontSize: 24, fontWeight: 900, margin: "8px 0" }}>🧳 せかいのたび</h2>
           <div style={{ fontSize: 13, fontWeight: 700, color: "#5a7ba0", textAlign: "center", marginBottom: 10 }}>
-            <Ruby t={"パックを えらんで たびに でよう！"} />
+            <Ruby t={"行き先を えらんで たびに でよう！"} />
           </div>
           <div style={{ display: "grid", gap: 8 }}>
             {packs.map((tp) => {
-              const stamp = (save.trips.stamps && save.trips.stamps[tp.id]) || 0;
+              /* パッククリア（🏅）=内包全国がにゅうこくしんさ済み(stageOf≥1)。訪問済みが1国以上なら🎫 */
+              const visitedCount = tp.ids.filter(isVisitedCountry).length;
+              const cleared = isPackCleared(tp, isVisitedCountry);
               const packCs = tp.ids.map((id) => byId.get(id)).filter(Boolean);
               return (
                 <button key={tp.id} onClick={() => startTrip(tp)} style={{
@@ -1208,7 +1309,7 @@ export default function App() {
                       {packCs.map((c) => <Flag key={c.id} c={c} w={24} />)}
                     </div>
                   </div>
-                  <span style={{ fontSize: 22 }}>{stamp >= 3 ? "🏅" : stamp >= 1 ? "🎫" : "☆"}</span>
+                  <span style={{ fontSize: 22 }}>{cleared ? "🏅" : visitedCount > 0 ? "🎫" : "☆"}</span>
                 </button>
               );
             })}
@@ -1230,241 +1331,351 @@ export default function App() {
     );
   }
 
-  /* ===== せかいのたび：セッション ===== */
-  if (screen === "trip" && tripQuiz.length > 0) {
-    const item = tripQuiz[tIdx];
-    const c = item.c;
-    const qType = item.qType;
-    const isMeet = qType === "meet2";
-    const isMap = qType === "map";
-    /* 致命的A（§2.2.4）: 地図タップ問題は正解確定(feedback)まで正解ピン/国を視覚的に
-       漏らさない。判定はhighlightModeFor経由に一本化し、個々の画面でのインライン条件分岐
-       ドリフトを防ぐ（PR2a-bisレビュー時のメモ対応）。 */
-    const mapHighlight = isMap ? highlightModeFor({ screen: "pinChoice", phase: tPhase }) : "reveal";
-    const isCorrect = tPicked && tPicked.id === c.id;
-    const SECTION_COLOR = { "であい": "#3dae7a", "みわける": "#2f9fd4", "ちょうせん": "#e8484f", "おかえり": "#a86fe0" };
-    const sectionColor = SECTION_COLOR[item.section];
+  /* ===== せかいのたび：にゅうこくしんさ〜のりつぎ〜ぜいかん（HANDOFF v2.3 §1） =====
+     PR3のスコープ: 幕間宣言・しんさ3れん・のりつぎ・ぜいかん・スタンプ演出まで。
+     パスポート閲覧画面(§6.2・PR4)としんさかんタイム(§7・PR5)はまだ結線しない。 */
+  if (screen === "trip" && tripVisits.length > 0) {
+    const country = tripVisits[tripVisitIdx];
+    const isTransfer = tripTransferId === country.id;
 
-    /* --- であい：くにカード導入（タップでスキップ可） --- */
-    if (isMeet && tPhase === "cardintro") {
+    /* --- 幕間: にゅうこくしんさ／のりつぎ宣言（§0-3構造の宣言・タップでスキップ可） --- */
+    if (tripScene === "gate") {
+      const direction = tripQ && tripQ.queue[0] && tripQ.queue[0].direction;
+      /* §0-3幕間宣言の出し分けはtrip.jsのgateSceneForに一本化（highlightModeFor同様、
+         個々の画面でのインライン条件分岐ドリフトを防ぐ） */
+      const gateScene = gateSceneFor(isTransfer, direction);
+      return (
+        <div style={{ ...wrap, minHeight: "auto", height: "100dvh", padding: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center" }}
+          onClick={advanceFromGate}>
+          <style>{css}</style>
+          <div style={{ fontSize: 64, animation: "floaty 2.2s ease-in-out infinite" }}>{gateScene.kind === "transfer" ? "🛬" : "✈️"}</div>
+          <div style={{ fontSize: 19, fontWeight: 900, color: "#3dae7a", marginTop: 10 }}>
+            {gateScene.kind === "transfer" ? <Ruby t={"とちゅう どこかの {国|くに}に とうちゃく！"} /> : <Ruby t={"つぎの {国|くに}に とうちゃく！"} />}
+          </div>
+          <div style={{ fontSize: 22, fontWeight: 900, marginTop: 8 }}>
+            {gateScene.kind === "transfer" ? <Ruby t={"🛂 のりつぎの あいだに しんさが あるよ"} /> : <Ruby t={"🛂 にゅうこくしんさ です！"} />}
+          </div>
+          {gateScene.showReverseFlavor && (
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#a86fe0", marginTop: 10 }}>
+              <Ruby t={"おっ、また きたね！では こんかいは…"} />
+            </div>
+          )}
+          <div style={{ marginTop: 24, maxWidth: 320, width: "100%" }}>
+            <BigBtn color="#3dae7a" onClick={advanceFromGate}>すすむ ▶（タップでOK）</BigBtn>
+          </div>
+        </div>
+      );
+    }
+
+    /* --- welcome: ゲート開放「ようこそ！」→くにカード＋おみやげ＋スタンプ押印（§1手順3-4・§6.3） --- */
+    if (tripScene === "welcome") {
+      const souvenir = souvenirOf(country.id, country.cont);
+      const stampEntry = tripStamps[tripStamps.length - 1];
+      const stampSvg = makeStamp(
+        { id: country.id, cont: country.cont, nameKana: country.k || plain(country.n) },
+        todayDateStr(), { gold: stampEntry ? stampEntry.gold : false }
+      );
       return (
         <div style={{ ...wrap, minHeight: "auto", height: "100dvh", padding: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}
-          onClick={skipTripIntro}>
+          onClick={advanceFromWelcome}>
           <style>{css}</style>
-          <div style={{ flex: "none", textAlign: "center", padding: "6px 0 4px", fontWeight: 900, fontSize: 13, color: sectionColor }}>
-            🧳 であい（{tIdx + 1}/{tripQuiz.length}）
+          {confetti && <Confetti />}
+          <div style={{ flex: "none", textAlign: "center", padding: "8px 0 2px", fontWeight: 900, fontSize: 20, color: "#3dae7a" }}>
+            ようこそ！ 🎉
           </div>
-          <div style={{ flex: "none", padding: "0 12px", maxWidth: 480, width: "100%", margin: "0 auto", boxSizing: "border-box" }}>
-            <WorldMap view={viewForCountry(c)} target={c} revealed height="24vh" pinchZoom resetKey={tIdx} />
-          </div>
-          <div style={{ flex: 1, overflowY: "auto", padding: "10px 14px", maxWidth: 480, width: "100%", margin: "0 auto", boxSizing: "border-box" }}>
+          <div style={{ flex: 1, overflowY: "auto", padding: "6px 14px", maxWidth: 480, width: "100%", margin: "0 auto", boxSizing: "border-box" }}>
             <div style={{ ...card, margin: 0, textAlign: "center" }}>
-              <Flag c={c} w={104} />
+              <Flag c={country} w={110} />
               <div style={{ fontSize: 25, fontWeight: 900, marginTop: 8 }}>
-                {c.k ? <ruby>{c.n}<rt style={{ fontSize: "0.5em", color: "#7a8aa0" }}>{c.k}</rt></ruby> : c.n}
+                {country.k ? <ruby>{country.n}<rt style={{ fontSize: "0.5em", color: "#7a8aa0" }}>{country.k}</rt></ruby> : country.n}
               </div>
-              <div style={{ fontSize: 14, fontWeight: 700, color: "#5a7ba0", marginTop: 4 }}>🏛️ <Ruby t={c.cap} /></div>
-              {c.h && <div style={{ fontSize: 13.5, fontWeight: 700, color: "#5a7ba0", marginTop: 8 }}>{HINT_ICON[c.h[0].t] || ""} <Ruby t={c.h[0].s} /></div>}
+              <div style={{ fontSize: 14, fontWeight: 700, color: "#5a7ba0", marginTop: 4 }}>🏛️ <Ruby t={country.cap} /></div>
+              {SOUVENIR_NOTES[country.id] && (
+                <div style={{ fontSize: 12.5, fontWeight: 700, color: "#a86fe0", marginTop: 6 }}><Ruby t={SOUVENIR_NOTES[country.id]} /></div>
+              )}
+              <div style={{ fontSize: 16, fontWeight: 900, color: "#e8a000", marginTop: 12 }}>
+                おみやげ ゲット！ {souvenir.e} <Ruby t={souvenir.n} />
+              </div>
+              <div style={{ width: 116, height: 116, margin: "12px auto 0" }} dangerouslySetInnerHTML={{ __html: stampSvg }} />
+              {stampEntry && stampEntry.gold && (
+                <div style={{ fontSize: 13, fontWeight: 800, color: "#e8a000", marginTop: 4 }}>🏅 きんいろスタンプ！マスターの しるし！</div>
+              )}
             </div>
           </div>
           <div style={{ flex: "none", padding: "10px 14px calc(10px + env(safe-area-inset-bottom))" }}>
             <div style={{ maxWidth: 480, margin: "0 auto" }}>
-              <BigBtn color="#3dae7a" onClick={skipTripIntro}>つぎへ ▶（タップでOK）</BigBtn>
+              <BigBtn color="#3dae7a" onClick={advanceFromWelcome}>つぎへ ▶（タップでOK）</BigBtn>
             </div>
           </div>
         </div>
       );
     }
 
-    /* --- ズーム〜こたえ合わせ --- */
-    const view = tPhase === "feedback" ? viewForCountry(c)
-      : isMap ? CONT_VIEW[c.cont]
-      : (tZoomed ? viewForCountry(c) : WORLD_VIEW);
-    return (
-      <div style={{ ...wrap, minHeight: "auto", height: "100dvh", padding: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}
-        onClick={tPhase === "zoom" ? skipTripZoom : undefined}>
-        <style>{css}</style>
-        {confetti && <Confetti />}
+    /* --- visit: しんさ3れん（§2・§2.1・§2.5・§3） --- */
+    if (tripScene === "visit" && tripQ) {
+      /* feedback表示中はtripQ.idxが既に次(または末尾)へ進んでいるため、答えた瞬間の
+         itemを使う（末尾ちょうどの時にqueue[idx]がundefinedになるクラッシュを防ぐ） */
+      const item = tripSubPhase === "feedback" ? tripAnsweredItem : tripQ.queue[tripQ.idx];
+      const isLoc = item.qType === "loc";
+      /* 致命的A（§2.2.4）: ピン4択は正解確定(feedback)まで正解を視覚的に漏らさない。
+         判定はhighlightModeFor経由に一本化する（PR2a-bisレビュー時の申し送り・混同禁止）。 */
+      const mapHighlight = isLoc ? highlightModeFor({ screen: "pinChoice", phase: tripSubPhase }) : "reveal";
+      const isCorrect = tripSubPhase === "feedback" && tripLastOk;
+      const view = isLoc ? viewForCountries(item.choices, MAP_DIMS)
+        : (tripSubPhase === "feedback" || tripZoomed) ? viewForCountry(country) : WORLD_VIEW;
+      const pins = isLoc ? layoutPins(item.choices, { mapDims: MAP_DIMS }).map((p) => ({
+        ...p,
+        state: tripSubPhase !== "feedback" ? "neutral"
+          : p.id === item.correctId ? "correct"
+          : tripPicked === p.id ? "wrong" : "neutral",
+      })) : null;
+      const doneCount = Object.keys(tripQ.firstAttemptResults).length;
+      return (
+        <div style={{ ...wrap, minHeight: "auto", height: "100dvh", padding: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}
+          onClick={tripSubPhase === "zoom" ? skipTripZoom : undefined}>
+          <style>{css}</style>
+          {confetti && <Confetti />}
 
-        <div style={{ flex: "none", display: "flex", justifyContent: "center", alignItems: "center", gap: 6, padding: "6px 0 4px" }}>
-          {tripQuiz.map((_, i) => (
-            <div key={i} style={{
-              width: i === tIdx ? 14 : 10, height: i === tIdx ? 14 : 10, borderRadius: "50%",
-              background: i < tIdx ? "#4cae6e" : i === tIdx ? sectionColor : "#c9d8e8", transition: "all .3s",
-            }} />
-          ))}
-        </div>
-        <div style={{ flex: "none", textAlign: "center", fontWeight: 900, fontSize: 12.5, color: sectionColor, marginBottom: 2 }}>
-          {item.section === "であい" ? "🧳 であい" : item.section === "みわける" ? "🔍 みわける" : item.section === "ちょうせん" ? "🔥 ちょうせん" : "🔄 おかえり"}
-          {tAttempt > 1 && <span style={{ marginLeft: 8, color: "#d05a4a" }}>もういちど！</span>}
-        </div>
+          <div style={{ flex: "none", display: "flex", justifyContent: "center", alignItems: "center", gap: 6, padding: "6px 0 4px" }}>
+            {SHINSA_SLOTS.map((_, i) => (
+              <div key={i} style={{
+                width: i === doneCount ? 14 : 10, height: i === doneCount ? 14 : 10, borderRadius: "50%",
+                background: i < doneCount ? "#4cae6e" : i === doneCount ? "#2f9fd4" : "#c9d8e8", transition: "all .3s",
+              }} />
+            ))}
+          </div>
+          <div style={{ flex: "none", textAlign: "center", fontWeight: 900, fontSize: 12.5, color: "#2f9fd4", marginBottom: 2 }}>
+            🛂 にゅうこくしんさ
+            {item.attemptNumber > 1 && <span style={{ marginLeft: 8, color: "#d05a4a" }}>もういちど！</span>}
+          </div>
 
-        <div style={{ flex: "none", padding: "0 12px", position: "relative", maxWidth: 480, width: "100%", margin: "0 auto", boxSizing: "border-box" }}>
-          {qType === "flag" && tPhase !== "feedback" ? (
-            <div style={{
-              height: "24vh", borderRadius: 20, background: "linear-gradient(180deg,#fff,#eef4fb)",
-              display: "flex", alignItems: "center", justifyContent: "center",
-              boxShadow: "inset 0 2px 10px rgba(40,90,140,.12)",
-            }}>
-              <Flag c={c} w={150} style={{ animation: "floaty 2.4s ease-in-out infinite" }} />
-            </div>
-          ) : isMeet ? (
-            <div style={{
-              height: "24vh", borderRadius: 20, background: "linear-gradient(180deg,#fff,#eef4fb)",
-              display: "flex", alignItems: "center", justifyContent: "center",
-              boxShadow: "inset 0 2px 10px rgba(40,90,140,.12)",
-            }}>
-              <Flag c={c} w={150} />
-            </div>
-          ) : (
+          <div style={{ flex: "none", padding: "0 12px", position: "relative", maxWidth: 480, width: "100%", margin: "0 auto", boxSizing: "border-box" }}>
             <WorldMap
               view={view}
-              target={mapHighlight === "candidatesEqual" ? null : c}
-              revealed={tPhase === "feedback"}
+              target={mapHighlight === "candidatesEqual" ? null : country}
+              revealed={tripSubPhase === "feedback"}
               height="24vh"
-              selected={isMap && tPicked ? tPicked : null}
-              onTapCountry={isMap && tPhase === "answer" ? tripMapAnswer : null}
-              tappableCont={isMap ? c.cont : null}
+              pins={pins}
+              onTapPin={isLoc && tripSubPhase === "answer" ? tripPinAnswer : null}
               pinchZoom
-              resetKey={tIdx}
+              resetKey={tripQ.idx}
             />
-          )}
-          {tPhase === "feedback" && (
+            {tripSubPhase === "feedback" && (
+              <div style={{
+                position: "absolute", left: "50%", bottom: 10, transform: "translateX(-50%)",
+                background: isCorrect ? "#3f9c3a" : "#d05a4a", color: "#fff", padding: "6px 18px",
+                borderRadius: 999, fontWeight: 900, fontSize: 17, whiteSpace: "nowrap",
+                boxShadow: "0 3px 8px rgba(0,0,0,.25)", animation: "pop .35s",
+              }}>
+                {isCorrect ? `⭕ ${praise}` : "❌ ざんねん！"}
+              </div>
+            )}
+          </div>
+
+          <div style={{ flex: 1, overflowY: "auto", WebkitOverflowScrolling: "touch", padding: "8px 14px", paddingBottom: tripSubPhase === "feedback" ? 88 : 10, maxWidth: 480, width: "100%", margin: "0 auto", boxSizing: "border-box" }}>
+            <div style={{ ...card, margin: 0, padding: "10px 12px", opacity: tripShowQ || tripSubPhase === "feedback" ? 1 : 0, transition: "all .3s" }}>
+              <div style={{ fontWeight: 900, fontSize: 15, color: "#2f9fd4", marginBottom: 6 }}>
+                {item.qType === "flag" && <Ruby t={"🚩 この こっきは どれ？"} />}
+                {item.qType === "name" && <Ruby t={"🗺️ くにの なまえは？"} />}
+                {isLoc && <Ruby t={"📍 ばしょは どこ？"} />}
+              </div>
+
+              {item.qType === "name" && item.showFlagContext && (
+                <div style={{ display: "flex", justifyContent: "center", marginBottom: 8 }}>
+                  <Flag c={country} w={70} />
+                </div>
+              )}
+
+              {item.qType === "flag" && (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                  {item.choices.map((ch) => {
+                    let bg = "#fff", border = "#bcd2e8";
+                    if (tripSubPhase === "feedback") {
+                      if (ch.id === item.correctId) { bg = "#e0f6db"; border = "#7ac974"; }
+                      else if (tripPicked && tripPicked.id === ch.id) { bg = "#fde3df"; border = "#ef8a7a"; }
+                    }
+                    return (
+                      <button key={ch.id} onClick={() => tripFlagAnswer(ch)} disabled={tripSubPhase !== "answer"}
+                        style={{
+                          padding: "8px", borderRadius: 13, border: `2.5px solid ${border}`, background: bg,
+                          cursor: tripSubPhase === "answer" ? "pointer" : "default",
+                          display: "flex", alignItems: "center", justifyContent: "center",
+                        }}>
+                        <Flag c={ch} w={70} />
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
+              {item.qType === "name" && (
+                <div style={{ display: "grid", gap: 6 }}>
+                  {item.choices.map((ch) => {
+                    let bg = "#fff", border = "#bcd2e8";
+                    if (tripSubPhase === "feedback") {
+                      if (ch.id === item.correctId) { bg = "#e0f6db"; border = "#7ac974"; }
+                      else if (tripPicked && tripPicked.id === ch.id) { bg = "#fde3df"; border = "#ef8a7a"; }
+                    }
+                    return (
+                      <button key={ch.id} onClick={() => tripFlagAnswer(ch)} disabled={tripSubPhase !== "answer"}
+                        style={{
+                          padding: "7px 10px", borderRadius: 13, border: `2.5px solid ${border}`,
+                          background: bg, fontSize: 16, fontWeight: 800, fontFamily: "inherit",
+                          cursor: tripSubPhase === "answer" ? "pointer" : "default", textAlign: "center", color: "#2a3a4a",
+                        }}>
+                        {ch.k ? <ruby>{ch.n}<rt style={{ fontSize: "0.5em", color: "#7a8aa0" }}>{ch.k}</rt></ruby> : ch.n}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
+              {isLoc && tripSubPhase === "answer" && (
+                <div style={{ textAlign: "center", fontSize: 12.5, fontWeight: 700, color: "#8a9ab0", marginTop: 4 }}>
+                  ↑ うえの ちずの 📍を タップしてね
+                </div>
+              )}
+
+              {tripSubPhase === "feedback" && (
+                <div style={{ marginTop: 8, textAlign: "center", fontSize: 13.5, fontWeight: 800, color: "#5a7ba0" }}>
+                  {!isCorrect && <div>こたえは「{country.n}」だよ。つぎは きっと できる！</div>}
+                  <div style={{ marginTop: 6, display: "flex", justifyContent: "center", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                    <Flag c={country} w={44} />
+                    <b>{country.n}</b>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {tripSubPhase === "feedback" && (
             <div style={{
-              position: "absolute", left: "50%", bottom: 10, transform: "translateX(-50%)",
-              background: isCorrect ? "#3f9c3a" : "#d05a4a", color: "#fff", padding: "6px 18px",
-              borderRadius: 999, fontWeight: 900, fontSize: 17, whiteSpace: "nowrap",
-              boxShadow: "0 3px 8px rgba(0,0,0,.25)", animation: "pop .35s",
+              position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 40,
+              padding: "12px 14px calc(10px + env(safe-area-inset-bottom))",
+              background: "linear-gradient(180deg, rgba(215,236,255,0), #d7ecff 45%)",
             }}>
-              {isCorrect ? `⭕ ${praise}` : "❌ ざんねん！"}
+              <div style={{ maxWidth: 480, margin: "0 auto" }}>
+                <BigBtn color={isCorrect ? "#2f9fd4" : "#d05a4a"} onClick={tripSubNext}>
+                  {isCorrect
+                    ? (tripQ.idx >= tripQ.queue.length ? "ゲートを あける！ ▶" : "つぎの もんだいへ ▶")
+                    : "もういちど ちょうせん！ 🔁"}
+                </BigBtn>
+              </div>
             </div>
           )}
         </div>
+      );
+    }
 
-        <div style={{ flex: 1, overflowY: "auto", WebkitOverflowScrolling: "touch", padding: "8px 14px", paddingBottom: tPhase === "feedback" ? 88 : 10, maxWidth: 480, width: "100%", margin: "0 auto", boxSizing: "border-box" }}>
-          <div style={{ ...card, margin: 0, padding: "10px 12px", opacity: tShowQ || tPhase === "feedback" ? 1 : 0, transition: "all .3s" }}>
-            <div style={{ fontWeight: 900, fontSize: 15, color: sectionColor, marginBottom: 6 }}>
-              {isMeet && <Ruby t={"このこっき、なんてくに？"} />}
-              {!isMeet && qType === "name" && <Ruby t={"ここは ど〜こだ？"} />}
-              {!isMeet && qType === "capital" && <Ruby t={"この {国|くに}の しゅとは ど〜こだ？"} />}
-              {!isMeet && qType === "flag" && <Ruby t={"この こっきは どこの {国|くに}かな？"} />}
-              {isMap && <Ruby t={"この {国|くに}を ちずで タップしてね"} />}
+    /* --- 幕間: ぜいかんけんさ（§1手順6・§5） --- */
+    if (tripScene === "customsIntro") {
+      return (
+        <div style={{ ...wrap, minHeight: "auto", height: "100dvh", padding: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center" }}
+          onClick={advanceFromCustomsIntro}>
+          <style>{css}</style>
+          <div style={{ fontSize: 64 }}>🛃</div>
+          <div style={{ fontSize: 22, fontWeight: 900, marginTop: 10 }}><Ruby t={"ぜいかんけんさ！"} /></div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: "#5a7ba0", marginTop: 8 }}><Ruby t={"おみやげは どこの くにの ものかな？"} /></div>
+          <div style={{ marginTop: 24, maxWidth: 320, width: "100%" }}>
+            <BigBtn color="#a86fe0" onClick={advanceFromCustomsIntro}>すすむ ▶（タップでOK）</BigBtn>
+          </div>
+        </div>
+      );
+    }
+
+    /* --- customs: ぜいかんの3問（§5：おみやげ絵文字→国旗4択） --- */
+    if (tripScene === "customs" && customsQ) {
+      const item = customsPhase === "feedback" ? customsAnsweredItem : customsQ.queue[customsQ.idx];
+      const isCustomsCorrect = customsPhase === "feedback" && customsLastOk;
+      const answeredCountry = byId.get(item.countryId);
+      return (
+        <div style={{ ...wrap, minHeight: "auto", padding: "16px 14px" }}>
+          <style>{css}</style>
+          {confetti && <Confetti />}
+          <div style={{ maxWidth: 480, margin: "0 auto" }}>
+            <div style={{ textAlign: "center", fontWeight: 900, fontSize: 13, color: "#a86fe0", marginBottom: 6 }}>
+              🛃 ぜいかんけんさ
+              {item.attemptNumber > 1 && <span style={{ marginLeft: 8, color: "#d05a4a" }}>もういちど！</span>}
             </div>
-
-            {!isMeet && qType !== "flag" && !isMap && (
-              <div style={{ display: "flex", gap: 12, alignItems: qType === "capital" ? "center" : "flex-start" }}>
-                <Flag c={c} w={62} style={{ flex: "none", marginTop: 2 }} />
-                {qType === "name" ? (
-                  <ul style={{ margin: 0, paddingLeft: 14, fontSize: 13.5, lineHeight: 1.7, fontWeight: 700, flex: 1 }}>
-                    {item.section === "おかえり" && <li style={{ color: "#a86fe0" }}>🔄 まえに でてきた {"国"}だよ</li>}
-                    <li style={{ color: "#9a6b2f" }}>🏛️ しゅとは <Ruby t={c.cap} /></li>
-                  </ul>
-                ) : (
-                  <div style={{ flex: 1, fontSize: 21, fontWeight: 900 }}>
-                    {c.k ? <ruby>{c.n}<rt style={{ fontSize: "0.5em", color: "#7a8aa0" }}>{c.k}</rt></ruby> : c.n}
-                  </div>
-                )}
+            <div style={{ ...card, margin: "0 auto", textAlign: "center" }}>
+              <div style={{ fontSize: 15, fontWeight: 800, color: "#5a7ba0", marginBottom: 6 }}>
+                <Ruby t={"この"} /> {item.souvenir.e} <Ruby t={"、どこで もらった？"} />
               </div>
-            )}
-            {isMap && (
-              <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
-                <Flag c={c} w={62} style={{ flex: "none", marginTop: 2 }} />
-                <ul style={{ margin: 0, paddingLeft: 14, fontSize: 13.5, lineHeight: 1.7, fontWeight: 700, flex: 1 }}>
-                  {c.h && <li>{HINT_ICON[c.h[0].t] || ""} <Ruby t={c.h[0].s} /></li>}
-                  <li>{CONT[c.cont].label}に あるよ</li>
-                </ul>
-              </div>
-            )}
-
-            {item.choices && (
-              <div style={{ display: "grid", gap: 6, marginTop: 8 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginTop: 8 }}>
                 {item.choices.map((ch) => {
-                  const label = qType === "capital" ? ch.cap : null;
                   let bg = "#fff", border = "#bcd2e8";
-                  if (tPhase === "feedback") {
-                    if (ch.id === c.id) { bg = "#e0f6db"; border = "#7ac974"; }
-                    else if (tPicked && ch.id === tPicked.id) { bg = "#fde3df"; border = "#ef8a7a"; }
+                  if (customsPhase === "feedback") {
+                    if (ch.id === item.countryId) { bg = "#e0f6db"; border = "#7ac974"; }
+                    else if (customsPicked && customsPicked.id === ch.id) { bg = "#fde3df"; border = "#ef8a7a"; }
                   }
                   return (
-                    <button key={ch.id} onClick={() => tripAnswer(ch)} disabled={tPhase !== "answer"}
+                    <button key={ch.id} onClick={() => customsAnswer(ch)} disabled={customsPhase !== "answer"}
                       style={{
-                        padding: "7px 10px", borderRadius: 13, border: `2.5px solid ${border}`,
-                        background: bg, fontSize: 16, fontWeight: 800, fontFamily: "inherit",
-                        cursor: tPhase === "answer" ? "pointer" : "default", textAlign: "center", color: "#2a3a4a",
-                        display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                        padding: "8px", borderRadius: 13, border: `2.5px solid ${border}`, background: bg,
+                        cursor: customsPhase === "answer" ? "pointer" : "default",
+                        display: "flex", alignItems: "center", justifyContent: "center",
                       }}>
-                      {label
-                        ? <Ruby t={label} />
-                        : ch.k ? <ruby>{ch.n}<rt style={{ fontSize: "0.5em", color: "#7a8aa0" }}>{ch.k}</rt></ruby> : ch.n}
+                      <Flag c={ch} w={70} />
                     </button>
                   );
                 })}
               </div>
-            )}
-            {isMap && !item.choices && tPhase === "answer" && (
-              <div style={{ textAlign: "center", fontSize: 12.5, fontWeight: 700, color: "#8a9ab0", marginTop: 8 }}>
-                ↑ うえの ちずを タップしてね
-              </div>
-            )}
-
-            {tPhase === "feedback" && (
-              <div style={{ marginTop: 8, textAlign: "center", fontSize: 13.5, fontWeight: 800, color: "#5a7ba0" }}>
-                {!isCorrect && (
-                  <div>こたえは「{qType === "capital" ? <Ruby t={c.cap} /> : c.n}」だよ。つぎは きっと できる！</div>
-                )}
-                <div style={{ marginTop: 6, display: "flex", justifyContent: "center", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                  <Flag c={c} w={44} />
-                  <b>{c.n}</b>
-                  <span>🏛️ <Ruby t={c.cap} /></span>
+              {customsPhase === "feedback" && (
+                <div style={{ marginTop: 10, fontSize: 13.5, fontWeight: 800, color: "#5a7ba0" }}>
+                  {isCustomsCorrect ? `⭕ ${praise}` : `❌ こたえは ${answeredCountry ? answeredCountry.n : ""}だよ`}
                 </div>
+              )}
+            </div>
+            {customsPhase === "feedback" && (
+              <div style={{ marginTop: 12 }}>
+                <BigBtn color={isCustomsCorrect ? "#a86fe0" : "#d05a4a"} onClick={customsNext}>
+                  {isCustomsCorrect
+                    ? (customsQ.idx >= customsQ.queue.length ? "たびの けっかを みる！" : "つぎの もんだいへ ▶")
+                    : "もういちど ちょうせん！ 🔁"}
+                </BigBtn>
               </div>
             )}
           </div>
         </div>
+      );
+    }
 
-        {tPhase === "feedback" && (
-          <div style={{
-            position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 40,
-            padding: "12px 14px calc(10px + env(safe-area-inset-bottom))",
-            background: "linear-gradient(180deg, rgba(215,236,255,0), #d7ecff 45%)",
-          }}>
-            <div style={{ maxWidth: 480, margin: "0 auto" }}>
-              <BigBtn color={tOutcome && tOutcome.retry ? "#d05a4a" : "#2f9fd4"} onClick={tripAdvanceOrRetry}>
-                {tOutcome && tOutcome.retry ? "もういちど ちょうせん！ 🔁"
-                  : tIdx + 1 >= tripQuiz.length ? "たびの けっかを みる！" : "つぎの もんだいへ ▶"}
-              </BigBtn>
+    /* --- arrival: たびのまとめ（§1手順8-9。パスポート閲覧本体はPR4） --- */
+    if (tripScene === "arrival") {
+      const goldCount = tripStamps.filter((s) => s.gold).length;
+      const locked = nextLockedPack(packUnlockSave);
+      return (
+        <div style={wrap}><style>{css}</style>
+          <Confetti count={goldCount > 0 ? 44 : 28} />
+          <div style={{ ...card, textAlign: "center", marginTop: 26 }}>
+            <div style={{ fontSize: 15, fontWeight: 800, color: "#5a7ba0" }}>たび クリア！</div>
+            <div style={{ fontSize: 22, fontWeight: 900, color: "#3dae7a", marginTop: 4 }}>{tripPack ? tripPack.label : ""}</div>
+            <div style={{ display: "flex", justifyContent: "center", gap: 10, marginTop: 12 }}>
+              {tripVisits.map((c) => (
+                <div key={c.id} style={{ textAlign: "center" }}>
+                  <Flag c={c} w={54} />
+                  <div style={{ fontSize: 11, fontWeight: 800, marginTop: 2 }}>{c.n}</div>
+                  <div style={{ fontSize: 18 }}>{tripStamps.find((s) => s.id === c.id && s.gold) ? "🏅" : "🎫"}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#5a7ba0", marginTop: 10 }}>
+              🎫 パスポートスタンプを {tripStamps.length}こ ゲット！
+              {goldCount > 0 && <span style={{ color: "#e8a000" }}>（🏅きんいろ{goldCount}こ！）</span>}
+            </div>
+            {locked && (
+              <div style={{ fontSize: 13, fontWeight: 800, color: "#8a9ab0", marginTop: 10 }}>
+                つぎの ひこうきは… {locked.icon} {locked.label.replace(/[①-⑨0-9]+$/, "")}いき！
+              </div>
+            )}
+            <div style={{ display: "grid", gap: 9, marginTop: 14 }}>
+              <BigBtn color="#3dae7a" onClick={() => setScreen("tripHome")}>🧳 つぎの たびへ</BigBtn>
+              <BigBtn color="#8aa0b8" onClick={() => setScreen("home")}>🏠 ホーム</BigBtn>
             </div>
           </div>
-        )}
-      </div>
-    );
-  }
-
-  /* ===== せかいのたび：けっか ===== */
-  if (screen === "tripResult" && tStampResult) {
-    const gold = tStampResult.stampValue >= 3;
-    return (
-      <div style={wrap}><style>{css}</style>
-        <Confetti count={gold ? 44 : 28} />
-        <div style={{ ...card, textAlign: "center", marginTop: 26 }}>
-          <div style={{ fontSize: 15, fontWeight: 800, color: "#5a7ba0" }}>たび クリア！</div>
-          <div style={{ fontSize: 60, margin: "10px 0", animation: "pop .5s" }}>{gold ? "🏅" : "🎫"}</div>
-          <div style={{ fontSize: 22, fontWeight: 900, color: "#3dae7a" }}>
-            {trip ? trip.label : ""}
-          </div>
-          <div style={{ fontSize: 15, fontWeight: 700, marginTop: 6, color: "#5a7ba0" }}>
-            {tStampResult.total}もんちゅう {tStampResult.correctCount}もん いっぱつせいかい！
-          </div>
-          <div style={{ fontSize: 14, fontWeight: 800, marginTop: 6, color: gold ? "#e8a000" : "#5a7ba0" }}>
-            {gold ? "🏅 きんいろスタンプ げっと！3だんはしご かんとう！" : "🎫 パスポートスタンプを ゲット！"}
-          </div>
-          <div style={{ display: "grid", gap: 9, marginTop: 14 }}>
-            <BigBtn color="#3dae7a" onClick={() => setScreen("tripHome")}>🧳 つぎの たびへ</BigBtn>
-            <BigBtn color="#8aa0b8" onClick={() => setScreen("home")}>🏠 ホーム</BigBtn>
-          </div>
         </div>
-      </div>
-    );
+      );
+    }
   }
 
   /* ===== せかいマップ ===== */

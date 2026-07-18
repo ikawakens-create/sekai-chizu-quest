@@ -1,12 +1,25 @@
-/* 「せかいのたび」セッションの純粋ロジック（HANDOFF v1.1 §4/§5/§6）。
+/* 「せかいのたび」の土台ロジック（HANDOFF v2.3）。
    React状態を持たず、App.jsxからもテストからも同じ関数を呼べるようにする。
-   抽選の重み付けはsrsWeight（§6）に一本化。[おかえり]枠のみsrsWeight降順の
-   上位からランダム選出する（B-2の加齢重み付き抽選から置き換え）。 */
+
+   v1.1のセッション構成（であい3/みわける4/ちょうせん2/おかえり1・buildTripSession）と
+   まちがえたときのルール（tripAnswerOutcome/applyTripAnswer）・パック完了スタンプ
+   （computeStampValue/finishTrip/stampCountOf）はv2.3で全面置換され廃止した
+   （HANDOFF v2.3 §9）。訪問1件の出題・正誤判定・スロット加算はsrc/data/shinsa.js
+   （§2/§2.5/§3）へ、押印はsrc/data/stamp.jsの makeStamp/applyStamp（§6）へ移管している。
+
+   本ファイルに残すのは：
+   - progOf/stageOf/masteredSlotCount: name/flag/capの3スロット版。cap（しゅと）は
+     たびモードのスコープ外になったため既存モード（ソロクイズ・たいりくせいは）専用として温存する
+     （HANDOFF v2.3 §2.5「capは既存モード専用で残すがstage判定から除外」）。しんさ3れんの
+     flag/name/loc版stageOf/progOfはshinsa.jsにあり名前が衝突するため、両方importする側
+     （App.jsx）でエイリアスが必要（混同禁止）。
+   - パック解放（unlockedTierMax/availablePacks/nextLockedPack）・軽量SRS（srsWeight）・
+     重み付き抽選（pickBySimpleWeight/pickTopBySrsWeightRandom）: v2.3でもそのまま流用。
+   - 新規: 1旅の訪問国確定（パック2＋のりつぎ1、§4/§8.3）とパッククリア判定。 */
 import { TRIPS } from "./trips.js";
-import { pushRecent } from "./save.js";
 
 const SLOTS = ["name", "flag", "cap"];
-const MASTER_AT = 2;
+export const MASTER_AT = 2;
 
 export const progOf = (save, id) => (save.prog && save.prog[id]) || { name: 0, flag: 0, cap: 0 };
 export const totalCorrect = (p) => p.name + p.flag + p.cap;
@@ -19,8 +32,6 @@ export function stageOf(save, id) {
   if (masteredSlotCount(save, id) < SLOTS.length) return 1;
   return 2;
 }
-
-const slotOfTripQType = (qType) => (qType === "capital" ? "cap" : qType === "flag" ? "flag" : "name");
 
 /* ---------- パック解放（§5.1） ---------- */
 const UNLOCK_AT = 6; /* 直前Tierを規定数クリアで次Tier解放 */
@@ -109,97 +120,87 @@ function fillDistinct(base, count, fallbackPools, rng) {
   return out.slice(0, count);
 }
 
-/* ---------- セッション構成（§5.2）: 10問 = であい3 / みわける4 / ちょうせん2 / おかえり1 ---------- */
-export function buildTripSession(countries, save, trip, { now = Date.now(), rng = Math.random } = {}) {
+/* ---------- §8.3 パッククリア判定・パック解放の「done」算出 ----------
+   パッククリア = 内包全国が(しんさ3れんの)stageOf ≥ 1。stageOfの実体はshinsa.js側にあり
+   本ファイルはそれに依存しないため、呼び出し側（App.jsx）が国idを渡す判定関数
+   isVisited(id) を注入する（trip.js↔shinsa.jsの循環依存・名前衝突を避ける設計）。 */
+export function isPackCleared(pack, isVisited) {
+  return pack.ids.every((id) => isVisited(id));
+}
+/* unlockedTierMaxが読む save.trips.done を、永続化せずその都度算出する。
+   「充当国のクリア判定帰属」（§8.3 ADR）: のりつぎ・隣接パック充当で訪れた国も
+   isVisitedがtrueを返す時点でどのパックの判定にも等しく効く。パック側は充当元/充当先の
+   区別を一切持たない（国の習熟という一枚岩の事実から毎回導出するため、帰属の特別処理は不要）。 */
+export function packDoneIds(allPacks, isVisited) {
+  return allPacks.filter((p) => isPackCleared(p, isVisited)).map((p) => p.id);
+}
+
+/* ---------- §8.3 行き先カードの供給：パック内の未訪問国から埋める ----------
+   隣接パックの定義（ADR・Sonnet裁定・PR3）: allAvailablePacks に渡された配列の宣言順で、
+   自パックを除く解放済み全パックを優先度順の充当プールとする（tierや地理的近さは見ない、
+   trips.jsの記述順=導入順をそのまま「隣接」とみなす最も単純な規則）。 */
+export function unvisitedInPack(pack, isVisited) {
+  return pack.ids.filter((id) => !isVisited(id));
+}
+export function fillPackDestinations(pack, allAvailablePacks, countries, save, count, opts = {}) {
+  const { isVisited, now = Date.now(), rng = Math.random } = opts;
   const byId = new Map(countries.map((c) => [c.id, c]));
-  const packCountries = trip.ids.map((id) => byId.get(id)).filter(Boolean);
-
-  /* [であい] 新パック3か国 × くにカード→即2択（こっき→なまえ） */
-  const meet = packCountries.map((c) => ({ section: "であい", qType: "meet2", c }));
-
-  const stage1Pool = countries.filter((c) => stageOf(save, c.id) === 1);
-  const stage2Pool = countries.filter((c) => stageOf(save, c.id) === 2);
-  const rotateTypes = ["name", "flag", "capital"];
-
-  /* [みわける] stage1から抽選。在庫が足りない序盤は新3か国の再出題で埋める */
-  const discernBase = pickBySimpleWeight(stage1Pool, Math.min(4, stage1Pool.length), save.srs, now, rng);
-  const discernPicked = fillDistinct(discernBase, 4, [packCountries, countries], rng);
-  const discern = discernPicked.map((c, i) => ({ section: "みわける", qType: rotateTypes[i % rotateTypes.length], c }));
-
-  /* [ちょうせん] stage2から: 地図タップ or しゅと4択。stage2が無ければstage1で代用 */
-  const challengeSourcePool = stage2Pool.length > 0 ? stage2Pool : stage1Pool;
-  const challengeBase = pickBySimpleWeight(challengeSourcePool, Math.min(2, challengeSourcePool.length), save.srs, now, rng);
-  const usedForChallenge = new Set([...meet, ...discern].map((x) => x.c.id));
-  const challengePicked = fillDistinct(challengeBase, 2, [countries.filter((c) => !usedForChallenge.has(c.id)), countries], rng);
-  const challengeTypes = ["map", "capital"];
-  const challenge = challengePicked.map((c, i) => ({ section: "ちょうせん", qType: challengeTypes[i % challengeTypes.length], c }));
-
-  /* [おかえり] 「わすれかけ」上位（srsWeight降順の上位からランダム選出）から */
-  const usedAll = new Set([...meet, ...discern, ...challenge].map((x) => x.c.id));
-  const recallPool = countries.filter((c) => !usedAll.has(c.id) && stageOf(save, c.id) >= 1);
-  const recallBase = pickTopBySrsWeightRandom(recallPool, Math.min(1, recallPool.length), save, now, rng);
-  const recallPicked = fillDistinct(recallBase, 1, [countries.filter((c) => !usedAll.has(c.id)), countries], rng);
-  const recall = recallPicked.map((c, i) => ({ section: "おかえり", qType: rotateTypes[i % rotateTypes.length], c }));
-
-  return [...meet, ...discern, ...challenge, ...recall];
+  const ownUnvisited = unvisitedInPack(pack, isVisited).map((id) => byId.get(id)).filter(Boolean);
+  const picked = pickBySimpleWeight(ownUnvisited, Math.min(count, ownUnvisited.length), save.srs, now, rng);
+  if (picked.length >= count) return picked;
+  const usedIds = new Set(picked.map((c) => c.id));
+  const adjacentIds = [...new Set(
+    allAvailablePacks.filter((p) => p.id !== pack.id).flatMap((p) => p.ids)
+      .filter((id) => !isVisited(id) && !usedIds.has(id))
+  )];
+  const adjacentPool = adjacentIds.map((id) => byId.get(id)).filter(Boolean);
+  return fillDistinct(picked, count, [adjacentPool], rng);
 }
 
-/* であい(stage0)の誤答: 別大陸・別フラググループから1つ（§4） */
-export function pickMeetWrong(countries, c, flagGroups, rng = Math.random) {
-  const sameGroupIds = new Set(
-    flagGroups.filter((g) => g.ids.includes(c.id)).flatMap((g) => g.ids)
-  );
-  const eligible = countries.filter((x) => x.id !== c.id && x.cont !== c.cont && !sameGroupIds.has(x.id));
-  const pool = eligible.length > 0 ? eligible : countries.filter((x) => x.id !== c.id);
-  return pool[Math.floor(rng() * pool.length)];
+/* ---------- §4 のりつぎ（トランジット）候補選出 ----------
+   候補は呼び出し側でstageOf(shinsa)≥1に絞り込み済みの国リストを渡す想定（trip.jsは
+   shinsa.jsのstageOfに依存しない）。係数 W = srsWeight(id) * (同大陸なら1.5倍) 。 */
+export function pickTransferCountry(candidates, targetConts, save, opts = {}) {
+  const { now = Date.now(), rng = Math.random } = opts;
+  if (!candidates || candidates.length === 0) return null;
+  const contSet = new Set(targetConts);
+  const weights = candidates.map((c) => srsWeight(save, c.id, now) * (contSet.has(c.cont) ? 1.5 : 1));
+  const total = weights.reduce((a, b) => a + b, 0);
+  let roll = rng() * total;
+  for (let i = 0; i < candidates.length; i++) {
+    if (roll < weights[i]) return candidates[i];
+    roll -= weights[i];
+  }
+  return candidates[candidates.length - 1];
 }
 
-/* ---------- まちがえたときのルール（§5.3・B-4・A-1） ---------- */
-/* attemptNumber: 今回が同一問題への何回目の解答か（1=初回）
-   updateSave: prog/srs/recentを書き込んでよいか（初回のみtrue）
-   retry: 選択肢シャッフルで即再出題するか
-   forcedAdvance: 3回連続不正解による強制前進か */
-export function tripAnswerOutcome(attemptNumber, ok) {
-  const updateSave = attemptNumber === 1;
-  if (ok) return { updateSave, retry: false, forcedAdvance: false };
-  const forcedAdvance = attemptNumber >= 3;
-  return { updateSave, retry: !forcedAdvance, forcedAdvance };
+/* ---------- §4+§8.3 1旅の訪問国確定：パックから2か国＋のりつぎ1か国 ----------
+   のりつぎ候補（呼び出し側でstageOf(shinsa)≥1にフィルタ済み）が無ければ、
+   「候補ゼロの場合はのりつぎ無し・新規3か国でよい」（§4）に従いパックから3か国に増やす。 */
+export function buildTripVisits(pack, allAvailablePacks, countries, save, transferEligible, opts = {}) {
+  const { isVisited, now = Date.now(), rng = Math.random } = opts;
+  const two = fillPackDestinations(pack, allAvailablePacks, countries, save, 2, { isVisited, now, rng });
+  const usedIds = new Set(two.map((c) => c.id));
+  const candidates = (transferEligible || []).filter((c) => !usedIds.has(c.id));
+  const transfer = pickTransferCountry(candidates, two.map((c) => c.cont), save, { now, rng });
+  if (!transfer) {
+    const three = fillPackDestinations(pack, allAvailablePacks, countries, save, 3, { isVisited, now, rng });
+    const extra = three.find((c) => !usedIds.has(c.id));
+    return { visits: extra ? [...two, extra] : two, transferId: null };
+  }
+  return { visits: [...two, transfer], transferId: transfer.id };
 }
 
-/* 初回解答のみsrs/prog/recentを更新する。再出題（2回目以降）はsave据え置き（B-4） */
-export function applyTripAnswer(save, c, qType, ok, attemptNumber, now = Date.now()) {
-  const { updateSave } = tripAnswerOutcome(attemptNumber, ok);
-  if (!updateSave) return save;
-  const slot = slotOfTripQType(qType);
-  const nextProg = ok
-    ? { ...save.prog, [c.id]: { ...progOf(save, c.id), [slot]: progOf(save, c.id)[slot] + 1 } }
-    : save.prog;
-  const prevSrs = (save.srs && save.srs[c.id]) || { streak: 0, lastAt: 0 };
-  const nextSrs = {
-    ...save.srs,
-    [c.id]: ok ? { streak: prevSrs.streak + 1, lastAt: now } : { streak: 0, lastAt: now },
-  };
-  return { ...save, prog: nextProg, srs: nextSrs, recent: pushRecent(save.recent, ok) };
-}
-
-/* ---------- パック完了とスタンプ（§5.4） ---------- */
-export function computeStampValue(save, trip) {
-  const allMastered = trip.ids.every((id) => masteredSlotCount(save, id) === SLOTS.length);
-  return allMastered ? 3 : 1; /* 3段はしご完登=金スタンプ / それ以外=通常スタンプ */
-}
-export function finishTrip(save, trip, now = Date.now()) {
-  const done = Array.isArray(save.trips && save.trips.done) ? save.trips.done : [];
-  const stamps = (save.trips && save.trips.stamps) || {};
-  const nextValue = computeStampValue(save, trip);
-  const prevValue = stamps[trip.id] || 0;
+/* ---------- §0-3 幕間宣言（にゅうこくしんさ／のりつぎ）の出し分け ----------
+   「構造は宣言する」（§0-3）: パートが変わるたび幕間で「いま何が起きているか」を
+   一言宣言する。何を宣言するかは以下の2つの境界だけで決まる純粋なマッピングとして
+   切り出す（App.jsx側の分岐ドリフトを防ぐ・highlightModeFor同様の一本化パターン）。
+   - kind: のりつぎ国の訪問か、パック本来の国の訪問か（§4）
+   - showReverseFlavor: 辛口化(逆走)を物語として宣言するセリフを添えるか（§2）。
+     逆走はstageOf=3でのみ発火するため、直後の幕間でのみ真になる */
+export function gateSceneFor(isTransfer, direction) {
   return {
-    ...save,
-    trips: {
-      done: done.includes(trip.id) ? done : [...done, trip.id],
-      stamps: { ...stamps, [trip.id]: Math.max(prevValue, nextValue) },
-    },
+    kind: isTransfer ? "transfer" : "entry",
+    showReverseFlavor: direction === "reverse",
   };
 }
-
-/* 将来のガチャ接続（Phase 5）用フック: 本PRでは数を返すだけ */
-export const stampCountOf = (save) => Object.values((save.trips && save.trips.stamps) || {}).filter((v) => v > 0).length;

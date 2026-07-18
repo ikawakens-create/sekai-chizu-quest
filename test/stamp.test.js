@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { makeStamp, shapeOf, STAMP_SHAPES } from "../src/data/stamp.js";
+import { makeStamp, shapeOf, STAMP_SHAPES, applyStamp } from "../src/data/stamp.js";
 
 const JPN = { id: "JPN", cont: "asia", nameKana: "にほん" };
 const AUS = { id: "AUS", cont: "oceania", nameKana: "オーストラリア" };
@@ -89,4 +89,34 @@ test("makeStamp: 大陸ごとにインク色（描画色）が異なる", () => 
 test("makeStamp: 未定義国（TIER3）でもクラッシュせずおもいで代替おみやげで生成できる", () => {
   const svg = makeStamp({ id: "XYZ", cont: "africa", nameKana: "テストこく" }, "2026-07-18");
   assert.ok(svg.includes("🦒"));
+});
+
+/* ---------- applyStamp（§6.3: 入国成功で必ず押印・再訪は日付追記） ---------- */
+function emptySave() {
+  return { passport: { stamps: {}, bonus: [], routes: [] } };
+}
+test("applyStamp: 初訪問で日付1件・gold未指定はfalseで記録される", () => {
+  const save = applyStamp(emptySave(), "JPN", "2026-07-18");
+  assert.deepEqual(save.passport.stamps.JPN, { dates: ["2026-07-18"], gold: false });
+});
+test("applyStamp: 再訪（別日）は同スタンプに日付を追記する", () => {
+  let save = applyStamp(emptySave(), "JPN", "2026-07-18");
+  save = applyStamp(save, "JPN", "2026-08-01");
+  assert.deepEqual(save.passport.stamps.JPN.dates, ["2026-07-18", "2026-08-01"]);
+});
+test("applyStamp: 同日に2回押しても日付は重複追加しない", () => {
+  let save = applyStamp(emptySave(), "JPN", "2026-07-18");
+  save = applyStamp(save, "JPN", "2026-07-18");
+  assert.deepEqual(save.passport.stamps.JPN.dates, ["2026-07-18"]);
+});
+test("applyStamp: gold:trueは以後goldのまま（再訪でgold:false扱いに戻さない）", () => {
+  let save = applyStamp(emptySave(), "JPN", "2026-07-18", true);
+  save = applyStamp(save, "JPN", "2026-08-01", false);
+  assert.equal(save.passport.stamps.JPN.gold, true);
+});
+test("applyStamp: 他国のスタンプは変更しない", () => {
+  let save = applyStamp(emptySave(), "JPN", "2026-07-18");
+  save = applyStamp(save, "AUS", "2026-07-19");
+  assert.ok(save.passport.stamps.JPN);
+  assert.ok(save.passport.stamps.AUS);
 });
