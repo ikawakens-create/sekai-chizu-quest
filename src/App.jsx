@@ -13,6 +13,9 @@ import {
   stageOf, availablePacks, nextLockedPack, buildTripSession, pickMeetWrong,
   tripAnswerOutcome, applyTripAnswer, finishTrip, computeStampValue,
 } from "./data/trip.js";
+import {
+  viewForCountry as computeCountryView, viewForCountries, showInsetFor,
+} from "./data/mapView.js";
 const HINTS = { ...DEMO_HINTS, ...HINTS_ASIA, ...HINTS_EUROPE, ...HINTS_AFRICA, ...HINTS_AMERICAS, ...HINTS_OCEANIA };
 
 /* =========================================================
@@ -186,41 +189,67 @@ function revealFrame(ra) {
   return st;
 }
 
-/* ---------- 表示ビュー（世界/大陸/国ズーム） ---------- */
-const clampT = (v, min) => Math.min(0, Math.max(min, v));
-function viewForCountry(c, maxS = 2.5) { /* 2.5倍まで＝大陸ごと見わたせる縮尺 */
-  const s = Math.min(c.zoom || 4, maxS);
-  return {
-    s,
-    tx: clampT(MAP_W / 2 - s * c.cx, MAP_W - s * MAP_W),
-    ty: clampT(MAP_H / 2 - s * c.cy, MAP_H - s * MAP_H),
-  };
+/* ---------- 表示ビュー（世界/大陸/国ズーム） ----------
+   HANDOFF v2.3 §2.2: スマートフレーミング（対象国のbboxが画面短辺の20%以上を占める倍率へ）。
+   実際の計算は src/data/mapView.js（純粋関数・テスト済み）に委譲する。 */
+const MAP_DIMS = { w: MAP_W, h: MAP_H };
+function viewForCountry(c) {
+  return computeCountryView(c, MAP_DIMS);
 }
+/* 日付変更線をまたぐ国は重心が地図の反対端に飛び、大陸の外接範囲計算を壊す
+   （例: サモア/トンガはcxが左端付近、キリバスは領土が線をまたぐため中央付近になる）。
+   国そのものは通常どおり描画するが、大陸フィットのbbox計算からのみ除外する
+   （ヨーロッパがロシアの重心を除外しているのと同じ理由・同じパターン）。 */
+const OCEANIA_DATELINE_OUTLIERS = new Set(["WSM", "TON", "KIR"]);
 const CONT_VIEW = (() => {
   const out = {};
   for (const key of CONT_KEYS) {
     let pts = COUNTRIES.filter((c) => c.cont === key);
     if (key === "europe") pts = pts.filter((c) => c.id !== "RUS"); // ロシアの重心はシベリアなので枠計算から除外
-    const xs = pts.map((c) => c.cx), ys = pts.map((c) => c.cy);
-    const pad = 30;
-    const x0 = Math.min(...xs) - pad, x1 = Math.max(...xs) + pad;
-    const y0 = Math.min(...ys) - pad, y1 = Math.max(...ys) + pad;
-    const s = Math.min(MAP_W / (x1 - x0), MAP_H / (y1 - y0), 8);
-    const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
-    out[key] = {
-      s,
-      tx: clampT(MAP_W / 2 - s * cx, MAP_W - s * MAP_W),
-      ty: clampT(MAP_H / 2 - s * cy, MAP_H - s * MAP_H),
-    };
+    if (key === "oceania") pts = pts.filter((c) => !OCEANIA_DATELINE_OUTLIERS.has(c.id));
+    out[key] = viewForCountries(pts, MAP_DIMS);
   }
   return out;
 })();
 const WORLD_VIEW = { s: 1, tx: 0, ty: 0 };
 
+/* ---------- 極小国の虫めがねインセット（§2.2.3） ----------
+   フレーミング後もbbox短辺が画面短辺の10%未満の国（既存の29(現データでは20)マーカー国含む）は、
+   メインマップ上の実位置に引き出し線でつないだ円形の拡大窓で形も同時に見せる。
+   viewの座標系（viewBox units）はg要素の外でも同じなので、s/tx/tyから直接位置計算できる。 */
+function CountryInset({ c, s, tx, ty }) {
+  const cx = tx + s * c.cx, cy = ty + s * c.cy;
+  const R = 32;
+  let ix = cx + 44, iy = cy - 44;
+  if (ix > MAP_W - R - 4) ix = cx - 44; // 右に出せなければ左側へ
+  ix = Math.min(Math.max(ix, R + 4), MAP_W - R - 4);
+  iy = Math.min(Math.max(iy, R + 4), MAP_H - R - 4);
+  const bw = c.bw || 6, bh = c.bh || 6;
+  const zoomIn = Math.min((R * 1.3) / Math.max(bw, 0.6), (R * 1.3) / Math.max(bh, 0.6), 90);
+  const clipId = `inset-clip-${c.id}`;
+  return (
+    <g style={{ pointerEvents: "none" }}>
+      <line x1={cx} y1={cy} x2={ix} y2={iy} stroke="#c0392b" strokeWidth={1.4} strokeDasharray="3 2" opacity={0.85} />
+      <clipPath id={clipId}><circle cx={ix} cy={iy} r={R} /></clipPath>
+      <circle cx={ix} cy={iy} r={R + 2.5} fill="#fff" stroke="#c0392b" strokeWidth={2} />
+      <g clipPath={`url(#${clipId})`}>
+        <rect x={ix - R} y={iy - R} width={R * 2} height={R * 2} fill="#cdeaff" />
+        {c.d ? (
+          <path d={c.d} fill="#ff7d6b" stroke="#c0392b" strokeWidth={1.2 / zoomIn}
+            transform={`translate(${ix} ${iy}) scale(${zoomIn}) translate(${-c.cx} ${-c.cy})`} />
+        ) : (
+          <circle cx={ix} cy={iy} r={7} fill="#ff5c46" stroke="#c0392b" strokeWidth={1.5} />
+        )}
+      </g>
+    </g>
+  );
+}
+
 /* ---------- 世界地図 ---------- */
 function WorldMap({ view = WORLD_VIEW, target, revealed, animate = true, height = "30vh",
                     masteryColor, onTapCountry, tappableCont, selected }) {
   const { s, tx, ty } = view;
+  const inset = target && showInsetFor(target, view) ? target : null;
   return (
     <div style={{
       overflow: "hidden", borderRadius: 20,
@@ -288,6 +317,7 @@ function WorldMap({ view = WORLD_VIEW, target, revealed, animate = true, height 
             </text>
           )}
         </g>
+        {inset && <CountryInset c={inset} s={s} tx={tx} ty={ty} />}
       </svg>
     </div>
   );
@@ -464,7 +494,7 @@ export default function App() {
   const [phase, setPhase] = useState("zoom");
   const [picked, setPicked] = useState(null);
   const [praise, setPraise] = useState("");
-  const [zoomed, setZoomed] = useState(false);
+  const [zoomStage, setZoomStage] = useState("world"); // world|continent|country（§2.2.2 2段ズーム）
   const [showQ, setShowQ] = useState(false);
   const [confetti, setConfetti] = useState(false);
   const [mapCont, setMapCont] = useState(null);   // せかいマップの大陸ズーム
@@ -543,15 +573,18 @@ export default function App() {
     setScreen("vs");
   };
 
-  /* ズーム演出 */
+  /* ズーム演出（§2.2.2 2段ズーム: 世界 → 大陸(0.4s) → 対象周辺(0.4s)） */
   useEffect(() => {
     if (screen !== "quiz" || phase !== "zoom") return;
     const q = quiz[qIdx];
-    setZoomed(false); setShowQ(false);
+    setZoomStage("world"); setShowQ(false);
     answerLockRef.current = false;
     const timers = [];
     const showsMap = q.qType !== "flag"; /* こっきモードは地図なし（こたえ発表でズーム） */
-    if (showsMap) timers.push(setTimeout(() => setZoomed(true), 450));
+    if (showsMap) {
+      timers.push(setTimeout(() => setZoomStage("continent"), 400));
+      timers.push(setTimeout(() => setZoomStage("country"), 800));
+    }
     timers.push(setTimeout(() => { setShowQ(true); setPhase("answer"); }, showsMap ? 1500 : 600));
     return () => timers.forEach(clearTimeout);
   }, [screen, phase, qIdx]);
@@ -725,18 +758,19 @@ export default function App() {
     else tripNext();
   };
 
-  /* --- たいりくせいは：ターン演出 → ズーム → 回答 --- */
+  /* --- たいりくせいは：ターン演出 → ズーム（§2.2.2 2段ズーム） → 回答 --- */
   useEffect(() => {
     if (screen !== "vs") return;
     if (vsPhase === "turn") {
-      setZoomed(false);
+      setZoomStage("world");
       const t = setTimeout(() => setVsPhase("zoom"), vsEvent ? 2200 : 1400);
       return () => clearTimeout(t);
     }
     if (vsPhase === "zoom") {
       answerLockRef.current = false;
       const timers = [
-        setTimeout(() => setZoomed(true), 400),
+        setTimeout(() => setZoomStage("continent"), 400),
+        setTimeout(() => setZoomStage("country"), 700),
         setTimeout(() => setVsPhase("answer"), 1400),
       ];
       return () => timers.forEach(clearTimeout);
@@ -907,7 +941,9 @@ export default function App() {
     const q = quiz[qIdx];
     const isCorrect = picked && picked.id === q.c.id;
     const qt = q.qType;
-    const view = zoomed || phase === "feedback" ? viewForCountry(q.c) : WORLD_VIEW;
+    const view = phase === "feedback" || zoomStage === "country" ? viewForCountry(q.c)
+      : zoomStage === "continent" ? CONT_VIEW[q.c.cont]
+      : WORLD_VIEW;
     return (
       <div style={{ ...wrap, minHeight: "auto", height: "100dvh", padding: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         <style>{css}</style>
@@ -1694,7 +1730,9 @@ export default function App() {
     const vsOk = vsPicked && vsPicked.id === vsQ.c.id;
     const counts = [0, 0];
     Object.values(vsTerr).forEach((o) => counts[o]++);
-    const view = zoomed || vsPhase === "feedback" ? viewForCountry(vsQ.c) : WORLD_VIEW;
+    const view = vsPhase === "feedback" || zoomStage === "country" ? viewForCountry(vsQ.c)
+      : zoomStage === "continent" ? CONT_VIEW[vsQ.c.cont]
+      : WORLD_VIEW;
     const terrColor = (c) => vsTerr[c.id] === 0 ? "#ff9d8f" : vsTerr[c.id] === 1 ? "#7fb5f2" : "#efe8db";
     return (
       <div style={{ ...wrap, minHeight: "auto", height: "100dvh", padding: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
