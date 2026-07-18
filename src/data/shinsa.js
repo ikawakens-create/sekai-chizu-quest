@@ -161,3 +161,33 @@ export function finishVisitSrs(save, countryId, firstAttemptResults, now = Date.
     srs: { ...save.srs, [countryId]: { streak: allFirstCorrect ? prevSrs.streak + 1 : 0, lastAt: now } },
   };
 }
+
+/* PR3: 訪問1件分のキュー進行を1つの純粋関数にまとめる（App.jsx側で手動管理すると
+   firstAttemptResultsの取り違えやfinishVisitSrsの複数回呼び出し（キュー消化のたびに
+   誤って呼ぶ等）を起こしやすいため、ここに一本化する）。
+   state = { queue, idx, firstAttemptResults }。呼び出し側の責務:
+   - 毎回 applyShinsaSlotAnswer(save, countryId, item.slot, ok, item.attemptNumber) でsave更新
+   - 戻り値の done===true になったとき、戻り値の firstAttemptResults を使って
+     finishVisitSrs を「1回だけ」呼ぶ（キューが完全に空になった=3スロットとも通過した瞬間）。 */
+export function advanceVisitQueue(state, chosenId, countries, flagGroups, hiddenDifficulty) {
+  const { queue, idx, firstAttemptResults } = state;
+  const item = queue[idx];
+  const { ok } = subquestionAnswerOutcome(item, chosenId);
+  const nextFirstAttemptResults = item.attemptNumber === 1
+    ? { ...firstAttemptResults, [item.slot]: ok }
+    : firstAttemptResults;
+  if (ok) {
+    const nextIdx = idx + 1;
+    return {
+      item, ok,
+      queue, idx: nextIdx, firstAttemptResults: nextFirstAttemptResults,
+      done: nextIdx >= queue.length,
+    };
+  }
+  const retryItem = buildRetryItem(item, countries, flagGroups, hiddenDifficulty);
+  return {
+    item, ok,
+    queue: [...queue, retryItem], idx: idx + 1, firstAttemptResults: nextFirstAttemptResults,
+    done: false, // 不正解は必ず末尾に再出題を積むため、この時点でキューが尽きることはない
+  };
+}

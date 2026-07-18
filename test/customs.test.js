@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   customsPoolIds, buildCustomsQueue, customsAnswerOutcome, buildCustomsRetryItem, applyCustomsAnswer,
+  advanceCustomsQueue,
 } from "../src/data/customs.js";
 import { mulberry32 } from "../src/data/rng.js";
 
@@ -105,4 +106,31 @@ test("再出題（attempt>=2）は今日の国・過去旅の国いずれもsave
   const before = JSON.parse(JSON.stringify(save));
   const next = applyCustomsAnswer(save, "C9", true, 2, ["C0", "C1", "C2"], 9999);
   assert.deepEqual(next, before);
+});
+
+/* ---------- advanceCustomsQueue: App.jsx側が呼ぶオーケストレーション関数（PR3） ---------- */
+test("advanceCustomsQueue: 全問初回正解ならdoneはキュー末尾でのみ1回発生する", () => {
+  const save = emptySave();
+  const queue = buildCustomsQueue(COUNTRIES, ["C0", "C1", "C2"], save, souvenirOf, { rng: seededRng(1) });
+  let state = { queue, idx: 0 };
+  let doneCount = 0;
+  while (state.idx < state.queue.length) {
+    const item = state.queue[state.idx];
+    const result = advanceCustomsQueue(state, item.countryId, COUNTRIES, "normal");
+    state = { queue: result.queue, idx: result.idx };
+    if (result.done) doneCount++;
+  }
+  assert.equal(doneCount, 1);
+});
+
+test("advanceCustomsQueue: 不正解は末尾に再出題を積み、当日国か過去旅の国かに関わらずsrc更新はapplyCustomsAnswer側の責務のまま", () => {
+  const save = { ...emptySave(), passport: { stamps: { C9: {} }, bonus: [], routes: [] } };
+  const queue = buildCustomsQueue(COUNTRIES, ["C0", "C1", "C2"], save, souvenirOf, { rng: seededRng(1) });
+  const item = queue[0];
+  const wrongId = item.choices.find((c) => c.id !== item.countryId).id;
+  const result = advanceCustomsQueue({ queue, idx: 0 }, wrongId, COUNTRIES, "normal");
+  assert.equal(result.ok, false);
+  assert.equal(result.done, false);
+  assert.equal(result.queue.length, queue.length + 1, "末尾に再出題(attempt+1)が積まれる");
+  assert.equal(result.queue[result.queue.length - 1].attemptNumber, 2);
 });

@@ -65,6 +65,23 @@ export function buildCustomsRetryItem(item, countries, hiddenDifficulty, opts = 
   };
 }
 
+/* PR3: ぜいかんキューの進行を1つの純粋関数にまとめる（App.jsx側の手動管理による
+   バグを防ぐ。shinsa.jsのadvanceVisitQueueと同じ形）。state = { queue, idx }。
+   呼び出し側の責務: 毎回 applyCustomsAnswer(save, item.countryId, ok, item.attemptNumber,
+   todayIds, now) でsave更新し、doneになったら画面を進める（ぜいかんはfinishVisitSrs相当の
+   訪問単位集計を持たない＝§5どおり各問の判定がそのまま最終結果）。 */
+export function advanceCustomsQueue(state, chosenId, countries, hiddenDifficulty) {
+  const { queue, idx } = state;
+  const item = queue[idx];
+  const { ok } = customsAnswerOutcome(item, chosenId);
+  if (ok) {
+    const nextIdx = idx + 1;
+    return { item, ok, queue, idx: nextIdx, done: nextIdx >= queue.length };
+  }
+  const retryItem = buildCustomsRetryItem(item, countries, hiddenDifficulty);
+  return { item, ok, queue: [...queue, retryItem], idx: idx + 1, done: false };
+}
+
 /* 初回解答のみrecentを更新する（水増し防止・§3）。srsは「当日国非更新」（§5）に従い、
    todayIdsに含まれる国は更新しない。過去旅の国のみ正解でstreak+1／不正解でstreak=0。 */
 export function applyCustomsAnswer(save, countryId, ok, attemptNumber, todayIds, now = Date.now()) {
