@@ -62,7 +62,7 @@ replaceOnce(
 `import {
   progOf as legacyProgOf, masteredSlotCount as legacyMasteredSlotCount, MASTER_AT,
   availablePacks, nextLockedPack,
-  isPackCleared, packDoneIds, buildTripVisits,
+  isPackCleared, packDoneIds, buildTripVisits, gateSceneFor,
 } from "./data/trip.js";\n`, "", "trip import");
 replaceOnce(
 `import {

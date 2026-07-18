@@ -190,3 +190,17 @@ export function buildTripVisits(pack, allAvailablePacks, countries, save, transf
   }
   return { visits: [...two, transfer], transferId: transfer.id };
 }
+
+/* ---------- §0-3 幕間宣言（にゅうこくしんさ／のりつぎ）の出し分け ----------
+   「構造は宣言する」（§0-3）: パートが変わるたび幕間で「いま何が起きているか」を
+   一言宣言する。何を宣言するかは以下の2つの境界だけで決まる純粋なマッピングとして
+   切り出す（App.jsx側の分岐ドリフトを防ぐ・highlightModeFor同様の一本化パターン）。
+   - kind: のりつぎ国の訪問か、パック本来の国の訪問か（§4）
+   - showReverseFlavor: 辛口化(逆走)を物語として宣言するセリフを添えるか（§2）。
+     逆走はstageOf=3でのみ発火するため、直後の幕間でのみ真になる */
+export function gateSceneFor(isTransfer, direction) {
+  return {
+    kind: isTransfer ? "transfer" : "entry",
+    showReverseFlavor: direction === "reverse",
+  };
+}

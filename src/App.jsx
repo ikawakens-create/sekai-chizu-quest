@@ -18,7 +18,7 @@ import { TRIPS } from "./data/trips.js";
 import {
   progOf as legacyProgOf, masteredSlotCount as legacyMasteredSlotCount, MASTER_AT,
   availablePacks, nextLockedPack,
-  isPackCleared, packDoneIds, buildTripVisits,
+  isPackCleared, packDoneIds, buildTripVisits, gateSceneFor,
 } from "./data/trip.js";
 import {
   SHINSA_SLOTS, stageOf as srStageOf, progOf as srProgOf, isMastered as srIsMastered,
@@ -1341,18 +1341,21 @@ export default function App() {
     /* --- 幕間: にゅうこくしんさ／のりつぎ宣言（§0-3構造の宣言・タップでスキップ可） --- */
     if (tripScene === "gate") {
       const direction = tripQ && tripQ.queue[0] && tripQ.queue[0].direction;
+      /* §0-3幕間宣言の出し分けはtrip.jsのgateSceneForに一本化（highlightModeFor同様、
+         個々の画面でのインライン条件分岐ドリフトを防ぐ） */
+      const gateScene = gateSceneFor(isTransfer, direction);
       return (
         <div style={{ ...wrap, minHeight: "auto", height: "100dvh", padding: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center" }}
           onClick={advanceFromGate}>
           <style>{css}</style>
-          <div style={{ fontSize: 64, animation: "floaty 2.2s ease-in-out infinite" }}>{isTransfer ? "🛬" : "✈️"}</div>
+          <div style={{ fontSize: 64, animation: "floaty 2.2s ease-in-out infinite" }}>{gateScene.kind === "transfer" ? "🛬" : "✈️"}</div>
           <div style={{ fontSize: 19, fontWeight: 900, color: "#3dae7a", marginTop: 10 }}>
-            {isTransfer ? <Ruby t={"とちゅう どこかの {国|くに}に とうちゃく！"} /> : <Ruby t={"つぎの {国|くに}に とうちゃく！"} />}
+            {gateScene.kind === "transfer" ? <Ruby t={"とちゅう どこかの {国|くに}に とうちゃく！"} /> : <Ruby t={"つぎの {国|くに}に とうちゃく！"} />}
           </div>
           <div style={{ fontSize: 22, fontWeight: 900, marginTop: 8 }}>
-            {isTransfer ? <Ruby t={"🛂 のりつぎの あいだに しんさが あるよ"} /> : <Ruby t={"🛂 にゅうこくしんさ です！"} />}
+            {gateScene.kind === "transfer" ? <Ruby t={"🛂 のりつぎの あいだに しんさが あるよ"} /> : <Ruby t={"🛂 にゅうこくしんさ です！"} />}
           </div>
-          {direction === "reverse" && (
+          {gateScene.showReverseFlavor && (
             <div style={{ fontSize: 14, fontWeight: 700, color: "#a86fe0", marginTop: 10 }}>
               <Ruby t={"おっ、また きたね！では こんかいは…"} />
             </div>
