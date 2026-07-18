@@ -7,17 +7,10 @@ import {
   tripAnswerOutcome, applyTripAnswer,
   computeStampValue, finishTrip, stampCountOf,
 } from "../src/data/trip.js";
+import { mulberry32 } from "../src/data/rng.js";
 
-/* シード付き擬似乱数（テストの決定性のため。mulberry32） */
-function seededRng(seed) {
-  let a = seed >>> 0;
-  return function () {
-    a |= 0; a = (a + 0x6D2B79F5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
+/* シード付き擬似乱数（テストの決定性のため。mulberry32。src/data/rng.js の実装を使用） */
+const seededRng = mulberry32;
 
 /* 24か国・4大陸のフィクスチャ（fillDistinctのフォールバックが十分機能する規模） */
 const CONTS = ["asia", "europe", "africa", "namerica"];
