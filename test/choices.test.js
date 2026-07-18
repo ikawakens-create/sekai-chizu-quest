@@ -136,3 +136,43 @@ test("正解の国自身が誤答として選ばれることはない", () => {
     assert.ok(!wrong.some((c) => c.id === "IDN"));
   }
 });
+
+/* --- count opt（HANDOFF v2.3 §2 こっき2〜4択・§3 格下げ2択） --- */
+test("countオプション: 省略時は従来どおり4択（後方互換）", () => {
+  const target = FIXTURE.find((c) => c.id === "IDN");
+  const choices = makeChoices(target, "name", { flagGroups: FLAG_GROUPS });
+  assert.equal(choices.length, 4);
+});
+
+test("countオプション: count=2なら正解1+誤答1の合計2択になる", () => {
+  const target = FIXTURE.find((c) => c.id === "IDN");
+  for (let i = 0; i < 30; i++) {
+    const choices = makeChoices(target, "name", { flagGroups: FLAG_GROUPS, count: 2 });
+    assert.equal(choices.length, 2);
+    assert.ok(choices.some((c) => c.id === "IDN"));
+  }
+});
+
+test("countオプション: count=2でも優先順位(同フラググループ優先)は維持される", () => {
+  const target = FIXTURE.find((c) => c.id === "IDN");
+  for (let i = 0; i < 30; i++) {
+    const choices = makeChoices(target, "name", { flagGroups: FLAG_GROUPS, count: 2 });
+    const wrong = choices.filter((c) => c.id !== "IDN");
+    assert.equal(wrong.length, 1);
+    assert.ok(REDWHITE_OTHERS.includes(wrong[0].id), "count=2でも同フラググループから選ばれるべき");
+  }
+});
+
+test("countオプション: opts無し(レガシー経路)でもcountを尊重する", () => {
+  const target = FIXTURE.find((c) => c.id === "IDN");
+  const choices = makeChoices(target, "name", { count: 2 });
+  assert.equal(choices.length, 2);
+  assert.ok(choices.some((c) => c.id === "IDN"));
+});
+
+test("countオプション: count=3なら正解1+誤答2の合計3択になる", () => {
+  const target = FIXTURE.find((c) => c.id === "IDN");
+  const choices = makeChoices(target, "name", { flagGroups: FLAG_GROUPS, count: 3 });
+  assert.equal(choices.length, 3);
+  assert.ok(choices.some((c) => c.id === "IDN"));
+});

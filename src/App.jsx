@@ -14,7 +14,7 @@ import {
   tripAnswerOutcome, applyTripAnswer, finishTrip, computeStampValue,
 } from "./data/trip.js";
 import {
-  viewForCountry as computeCountryView, viewForCountries, showInsetFor, applyPinchZoom,
+  viewForCountry as computeCountryView, viewForCountries, showInsetFor, applyPinchZoom, highlightModeFor,
 } from "./data/mapView.js";
 const HINTS = { ...DEMO_HINTS, ...HINTS_ASIA, ...HINTS_EUROPE, ...HINTS_AFRICA, ...HINTS_AMERICAS, ...HINTS_OCEANIA };
 
@@ -1237,6 +1237,10 @@ export default function App() {
     const qType = item.qType;
     const isMeet = qType === "meet2";
     const isMap = qType === "map";
+    /* 致命的A（§2.2.4）: 地図タップ問題は正解確定(feedback)まで正解ピン/国を視覚的に
+       漏らさない。判定はhighlightModeFor経由に一本化し、個々の画面でのインライン条件分岐
+       ドリフトを防ぐ（PR2a-bisレビュー時のメモ対応）。 */
+    const mapHighlight = isMap ? highlightModeFor({ screen: "pinChoice", phase: tPhase }) : "reveal";
     const isCorrect = tPicked && tPicked.id === c.id;
     const SECTION_COLOR = { "であい": "#3dae7a", "みわける": "#2f9fd4", "ちょうせん": "#e8484f", "おかえり": "#a86fe0" };
     const sectionColor = SECTION_COLOR[item.section];
@@ -1315,7 +1319,7 @@ export default function App() {
           ) : (
             <WorldMap
               view={view}
-              target={isMap && tPhase !== "feedback" ? null : c}
+              target={mapHighlight === "candidatesEqual" ? null : c}
               revealed={tPhase === "feedback"}
               height="24vh"
               selected={isMap && tPicked ? tPicked : null}

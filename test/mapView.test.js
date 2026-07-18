@@ -4,6 +4,7 @@ import {
   framingScale, viewFromScale, viewForCountry, viewForCountries,
   showInsetFor, highlightModeFor, zoomStageAt,
   clampView, applyPinchZoom, MAX_MANUAL_SCALE, MIN_MANUAL_SCALE,
+  mapUnitsForScreenPx, layoutPins, PIN_MIN_TAP_PX,
 } from "../src/data/mapView.js";
 import { COUNTRY_GEO, MAP_W, MAP_H } from "../src/data/world.geo.js";
 
@@ -245,4 +246,87 @@ test("applyPinchZoom: scaleFactor=1では倍率が変わらない（クランプ
   assert.equal(v.s, base.s);
   assert.ok(Math.abs(v.tx - base.tx) < 1e-9);
   assert.ok(Math.abs(v.ty - base.ty) < 1e-9);
+});
+
+/* --- §2.1 ピン方式（PR2b） --- */
+test("PIN_MIN_TAP_PXは56（6歳の指を基準に44pxから引き上げ）", () => {
+  assert.equal(PIN_MIN_TAP_PX, 56);
+});
+
+test("mapUnitsForScreenPx: コンテナが小さいほど、同じ物理pxに相当するviewBox単位は大きくなる", () => {
+  const wide = mapUnitsForScreenPx(56, 900, 460, 1);   // コンテナ幅900px（PC想定）
+  const narrow = mapUnitsForScreenPx(56, 390, 460, 1); // コンテナ幅390px（スマホ想定）
+  assert.ok(narrow > wide, "狭い画面ほど同じ56pxがより大きいviewBox単位になるはず");
+});
+
+test("mapUnitsForScreenPx: ズーム倍率sが上がるほど必要なviewBox単位は小さくなる", () => {
+  const atS1 = mapUnitsForScreenPx(56, 390, 460, 1);
+  const atS4 = mapUnitsForScreenPx(56, 390, 460, 4);
+  assert.ok(Math.abs(atS4 - atS1 / 4) < 1e-9);
+});
+
+test("layoutPins: 十分離れた候補はジッターせず実位置のままピンを立てる", () => {
+  const candidates = [
+    { id: "A", cx: 100, cy: 100 }, { id: "B", cx: 400, cy: 100 },
+    { id: "C", cx: 100, cy: 300 }, { id: "D", cx: 400, cy: 300 },
+  ];
+  const pins = layoutPins(candidates, { minSeparation: 20 });
+  for (const p of pins) {
+    assert.equal(p.jittered, false);
+    assert.equal(p.pinX, p.x);
+    assert.equal(p.pinY, p.y);
+  }
+});
+
+test("layoutPins: 近接する2候補はずらされ、実位置は変更されない（誤答選択肢戦略を壊さない）", () => {
+  const candidates = [
+    { id: "A", cx: 200, cy: 200 }, { id: "B", cx: 205, cy: 200 }, // 5しか離れていない
+    { id: "C", cx: 500, cy: 200 },
+  ];
+  const pins = layoutPins(candidates, { minSeparation: 20 });
+  const [a, b, c] = pins;
+  assert.equal(a.jittered, true);
+  assert.equal(b.jittered, true);
+  assert.equal(c.jittered, false);
+  // 実位置(x,y)は候補国の本来のcx,cyのまま
+  assert.equal(a.x, 200); assert.equal(a.y, 200);
+  assert.equal(b.x, 205); assert.equal(b.y, 200);
+  // ずらした後のピン同士は最低でもminSeparation分離れている
+  const d = Math.hypot(a.pinX - b.pinX, a.pinY - b.pinY);
+  assert.ok(d >= 20 - 1e-6, `pin separation too small: ${d}`);
+});
+
+test("layoutPins: 4候補が全部近接していれば全員ずらされ、互いにminSeparation以上離れる", () => {
+  const candidates = [
+    { id: "A", cx: 300, cy: 300 }, { id: "B", cx: 302, cy: 300 },
+    { id: "C", cx: 300, cy: 302 }, { id: "D", cx: 302, cy: 302 },
+  ];
+  const pins = layoutPins(candidates, { minSeparation: 30 });
+  assert.ok(pins.every((p) => p.jittered));
+  for (let i = 0; i < pins.length; i++) {
+    for (let j = i + 1; j < pins.length; j++) {
+      const d = Math.hypot(pins[i].pinX - pins[j].pinX, pins[i].pinY - pins[j].pinY);
+      assert.ok(d >= 30 - 1e-6, `pins ${i},${j} too close after jitter: ${d}`);
+    }
+  }
+});
+
+test("layoutPins: mapDimsを渡すとピン位置がマップ範囲内にクランプされる", () => {
+  const candidates = [
+    { id: "A", cx: 1, cy: 1 }, { id: "B", cx: 3, cy: 1 }, // 端に近い2候補、円周配置で範囲外に出うる
+  ];
+  const pins = layoutPins(candidates, { minSeparation: 40, mapDims: { w: 900, h: 460 } });
+  for (const p of pins) {
+    assert.ok(p.pinX >= 0 && p.pinX <= 900);
+    assert.ok(p.pinY >= 0 && p.pinY <= 460);
+  }
+});
+
+test("layoutPins: 出力順序は入力順序と対応する（idで検証）", () => {
+  const candidates = [
+    { id: "A", cx: 300, cy: 300 }, { id: "B", cx: 301, cy: 300 },
+    { id: "C", cx: 700, cy: 300 },
+  ];
+  const pins = layoutPins(candidates, { minSeparation: 20 });
+  assert.deepEqual(pins.map((p) => p.id), ["A", "B", "C"]);
 });
