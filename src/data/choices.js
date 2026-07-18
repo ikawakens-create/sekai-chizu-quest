@@ -1,7 +1,8 @@
 /* 誤答選択肢の生成ロジック。
    既存4モード（ランダム/国名/首都/こっき）は opts なしで呼び出し、従来と完全に同じ挙動を維持する。
-   「せかいのたび」モード（PR3以降）は opts = {difficulty, learnedIds, flagGroups} を渡し、
-   誤答の優先順位を切り替える（§4 3段はしご「みわける」/ §3.3 隠し難易度）。 */
+   「せかいのたび」モード（HANDOFF v2.3 §2/§2.5/§3）は opts = {difficulty, learnedIds, flagGroups, count}
+   を渡し、誤答の優先順位（§2 3れん/§3.3 隠し難易度）と選択肢数（§2 こっき2〜4択・§3 格下げ2択）を
+   切り替える。count省略時は常に4択（従来どおり）。 */
 
 const plainCap = (s) => s.replace(/\{([^|}]+)\|[^}]+\}/g, "$1");
 
@@ -14,24 +15,26 @@ const shuffle = (arr) => {
   return a;
 };
 
-function legacyChoices(countries, c, field) {
+function legacyChoices(countries, c, field, count) {
   const same = shuffle(countries.filter((x) => x.cont === c.cont && x.id !== c.id && (field !== "cap" || plainCap(x.cap) !== plainCap(c.cap))));
   const others = shuffle(countries.filter((x) => x.cont !== c.cont && x.id !== c.id));
-  const wrong = [...same, ...others].slice(0, 3);
+  const wrong = [...same, ...others].slice(0, count - 1);
   return shuffle([c, ...wrong]);
 }
 
 /* countries（合成済みの国リスト）を束縛した makeChoices(c, field, opts) を返す */
 export function createMakeChoices(countries) {
   return function makeChoices(c, field, opts = {}) {
-    const { difficulty, learnedIds, flagGroups } = opts;
+    const { difficulty, learnedIds, flagGroups, count = 4 } = opts;
 
-    /* 後方互換: 追加引数が一切無い場合は従来のアルゴリズムをそのまま実行する */
+    /* 後方互換: count以外の追加引数が一切無い場合は従来のアルゴリズムをそのまま実行する
+       （count はたびモード専用の新規optなので、これ単独の指定は従来呼び出しには存在しない）。 */
     if (!difficulty && !learnedIds && !flagGroups) {
-      return legacyChoices(countries, c, field);
+      return legacyChoices(countries, c, field, count);
     }
 
     const eligible = (x) => x.id !== c.id && (field !== "cap" || plainCap(x.cap) !== plainCap(c.cap));
+    const need = count - 1;
 
     const learnedSet = learnedIds ? new Set(learnedIds) : null;
     const groupIdSet = flagGroups
@@ -56,16 +59,16 @@ export function createMakeChoices(countries) {
     const used = new Set([c.id]);
     for (const pool of order) {
       for (const x of pool) {
-        if (wrong.length >= 3) break;
+        if (wrong.length >= need) break;
         if (used.has(x.id)) continue;
         wrong.push(x);
         used.add(x.id);
       }
-      if (wrong.length >= 3) break;
+      if (wrong.length >= need) break;
     }
-    if (wrong.length < 3) {
+    if (wrong.length < need) {
       for (const x of shuffle(countries.filter((x) => eligible(x) && !used.has(x.id)))) {
-        if (wrong.length >= 3) break;
+        if (wrong.length >= need) break;
         wrong.push(x);
         used.add(x.id);
       }

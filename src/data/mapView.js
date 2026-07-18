@@ -111,3 +111,61 @@ export function applyPinchZoom(baseView, anchor, scaleFactor, mapDims, opts = {}
   const mapY = (anchor.y - ty0) / s0;
   return clampView(s1, anchor.x - s1 * mapX, anchor.y - s1 * mapY, mapDims);
 }
+
+/* HANDOFF v2.3 §2.1: ピン方式の位置問題（Q3・しんさ3れん）。
+   タップ判定は最低56×56px相当。ここではCSSピクセルとは独立に「viewBox単位でどれだけの
+   最小間隔を確保すべきか」を、実際に描画されているコンテナの物理サイズ(viewportShortPx)
+   から逆算する（HANDOFFの「ビューポート比から逆算」を、xMidYMid sliceの規則に沿って実装。
+   固定のSVG単位定数をあてがう旧実装が誤タップ多発の原因だったため、同じ轍を踏まない）。
+   viewportShortPx・mapDimsの実測はDOM依存のためApp.jsx側の責務とし、本関数は算数のみ行う。 */
+export const PIN_MIN_TAP_PX = 56;
+export function mapUnitsForScreenPx(targetPx, viewportShortPx, mapShortSide, s) {
+  const screenPxPerMapUnitAtS1 = viewportShortPx / mapShortSide; // xMidYMid slice の基準倍率
+  return targetPx / (screenPxPerMapUnitAtS1 * s);
+}
+
+/* 候補点(cx,cy)どうしがminSeparation未満に近接しているものを同じクラスタにまとめ、
+   クラスタの重心を中心とする円周上へ均等配置してピン位置(pinX,pinY)をずらす。
+   候補国そのもの・実位置(x,y)は変更しない＝誤答選択肢戦略を地図都合で壊さない（§2.1）。
+   孤立した候補（近接なし）はjittered:falseで実位置そのままを返す。 */
+function clusterByProximity(points, minSeparation) {
+  const parent = points.map((_, i) => i);
+  const find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+  const union = (i, j) => { const a = find(i), b = find(j); if (a !== b) parent[a] = b; };
+  for (let i = 0; i < points.length; i++) {
+    for (let j = i + 1; j < points.length; j++) {
+      if (Math.hypot(points[i].cx - points[j].cx, points[i].cy - points[j].cy) < minSeparation) union(i, j);
+    }
+  }
+  const groups = new Map();
+  points.forEach((_, i) => {
+    const root = find(i);
+    if (!groups.has(root)) groups.set(root, []);
+    groups.get(root).push(i);
+  });
+  return [...groups.values()];
+}
+
+export function layoutPins(candidates, opts = {}) {
+  const { minSeparation = 20, mapDims } = opts;
+  const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
+  const out = new Array(candidates.length);
+  for (const idxs of clusterByProximity(candidates, minSeparation)) {
+    if (idxs.length === 1) {
+      const i = idxs[0];
+      out[i] = { id: candidates[i].id, x: candidates[i].cx, y: candidates[i].cy, pinX: candidates[i].cx, pinY: candidates[i].cy, jittered: false };
+      continue;
+    }
+    const n = idxs.length;
+    const ccx = idxs.reduce((a, i) => a + candidates[i].cx, 0) / n;
+    const ccy = idxs.reduce((a, i) => a + candidates[i].cy, 0) / n;
+    const r = minSeparation / (2 * Math.sin(Math.PI / n));
+    idxs.forEach((i, k) => {
+      const angle = (2 * Math.PI * k) / n - Math.PI / 2;
+      let pinX = ccx + r * Math.cos(angle), pinY = ccy + r * Math.sin(angle);
+      if (mapDims) { pinX = clamp(pinX, 0, mapDims.w); pinY = clamp(pinY, 0, mapDims.h); }
+      out[i] = { id: candidates[i].id, x: candidates[i].cx, y: candidates[i].cy, pinX, pinY, jittered: true };
+    });
+  }
+  return out;
+}
