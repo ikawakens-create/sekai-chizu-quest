@@ -14,7 +14,7 @@ import {
   tripAnswerOutcome, applyTripAnswer, finishTrip, computeStampValue,
 } from "./data/trip.js";
 import {
-  viewForCountry as computeCountryView, viewForCountries, showInsetFor,
+  viewForCountry as computeCountryView, viewForCountries, showInsetFor, applyPinchZoom,
 } from "./data/mapView.js";
 const HINTS = { ...DEMO_HINTS, ...HINTS_ASIA, ...HINTS_EUROPE, ...HINTS_AFRICA, ...HINTS_AMERICAS, ...HINTS_OCEANIA };
 
@@ -246,21 +246,66 @@ function CountryInset({ c, s, tx, ty }) {
 }
 
 /* ---------- 世界地図 ---------- */
+/* §2.2.5 ピンチズーム対応画面（せかいマップ／たび／たいりくせいは）でのみ pinchZoom=true を渡す。
+   二本指ピンチ中はview propを一時的に上書きする「手動view」をローカルstateで保持し、
+   resetKeyが変わった（次の問題／画面遷移）タイミングで自動的に破棄し、自動フレーミングへ戻す。 */
 function WorldMap({ view = WORLD_VIEW, target, revealed, animate = true, height = "30vh",
-                    masteryColor, onTapCountry, tappableCont, selected }) {
-  const { s, tx, ty } = view;
-  const inset = target && showInsetFor(target, view) ? target : null;
+                    masteryColor, onTapCountry, tappableCont, selected, pinchZoom, resetKey }) {
+  const svgRef = useRef(null);
+  const pointersRef = useRef(new Map());
+  const gestureRef = useRef(null);
+  const [manualView, setManualView] = useState(null);
+  useEffect(() => { setManualView(null); }, [resetKey]);
+
+  const effectiveView = manualView || view;
+  const { s, tx, ty } = effectiveView;
+  const inset = target && showInsetFor(target, effectiveView) ? target : null;
+
+  const clientToViewBox = (clientX, clientY) => {
+    const svg = svgRef.current;
+    if (!svg) return { x: 0, y: 0 };
+    const pt = svg.createSVGPoint();
+    pt.x = clientX; pt.y = clientY;
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return { x: 0, y: 0 };
+    const p = pt.matrixTransform(ctm.inverse());
+    return { x: p.x, y: p.y };
+  };
+  const onPointerDown = !pinchZoom ? undefined : (e) => {
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointersRef.current.size === 2) {
+      const [p1, p2] = [...pointersRef.current.values()];
+      gestureRef.current = { initialDist: Math.hypot(p1.x - p2.x, p1.y - p2.y), baseView: effectiveView };
+    }
+  };
+  const onPointerMove = !pinchZoom ? undefined : (e) => {
+    if (!pointersRef.current.has(e.pointerId)) return;
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointersRef.current.size !== 2 || !gestureRef.current || gestureRef.current.initialDist < 1) return;
+    const [p1, p2] = [...pointersRef.current.values()];
+    const dist = Math.hypot(p1.x - p2.x, p1.y - p2.y);
+    const scaleFactor = dist / gestureRef.current.initialDist;
+    const anchor = clientToViewBox((p1.x + p2.x) / 2, (p1.y + p2.y) / 2);
+    setManualView(applyPinchZoom(gestureRef.current.baseView, anchor, scaleFactor, MAP_DIMS));
+  };
+  const onPointerEnd = !pinchZoom ? undefined : (e) => {
+    pointersRef.current.delete(e.pointerId);
+    if (pointersRef.current.size < 2) gestureRef.current = null;
+  };
+
   return (
     <div style={{
       overflow: "hidden", borderRadius: 20,
       background: "linear-gradient(180deg,#cdeaff,#a9d8f5)",
       boxShadow: "inset 0 2px 10px rgba(40,90,140,.18)",
     }}>
-      <svg viewBox={`0 0 ${MAP_W} ${MAP_H}`} preserveAspectRatio="xMidYMid slice"
-        style={{ display: "block", width: "100%", height }}>
+      <svg ref={svgRef} viewBox={`0 0 ${MAP_W} ${MAP_H}`} preserveAspectRatio="xMidYMid slice"
+        style={{ display: "block", width: "100%", height, touchAction: pinchZoom ? "none" : undefined }}
+        onPointerDown={onPointerDown} onPointerMove={onPointerMove}
+        onPointerUp={onPointerEnd} onPointerCancel={onPointerEnd} onPointerLeave={onPointerEnd}>
         <g style={{
           transform: `translate(${tx}px, ${ty}px) scale(${s})`,
-          transition: animate ? "transform 1.1s cubic-bezier(.45,.05,.25,1)" : "none",
+          transition: animate && !manualView ? "transform 1.1s cubic-bezier(.45,.05,.25,1)" : "none",
         }}>
           {/* 経緯線グリッド（15度きざみ）＋赤道 */}
           <path d={GRATICULE} fill="none" stroke="rgba(50,110,170,.30)" strokeWidth={0.7 / s} />
@@ -1206,7 +1251,7 @@ export default function App() {
             🧳 であい（{tIdx + 1}/{tripQuiz.length}）
           </div>
           <div style={{ flex: "none", padding: "0 12px", maxWidth: 480, width: "100%", margin: "0 auto", boxSizing: "border-box" }}>
-            <WorldMap view={viewForCountry(c)} target={c} revealed height="24vh" />
+            <WorldMap view={viewForCountry(c)} target={c} revealed height="24vh" pinchZoom resetKey={tIdx} />
           </div>
           <div style={{ flex: 1, overflowY: "auto", padding: "10px 14px", maxWidth: 480, width: "100%", margin: "0 auto", boxSizing: "border-box" }}>
             <div style={{ ...card, margin: 0, textAlign: "center" }}>
@@ -1276,6 +1321,8 @@ export default function App() {
               selected={isMap && tPicked ? tPicked : null}
               onTapCountry={isMap && tPhase === "answer" ? tripMapAnswer : null}
               tappableCont={isMap ? c.cont : null}
+              pinchZoom
+              resetKey={tIdx}
             />
           )}
           {tPhase === "feedback" && (
@@ -1424,7 +1471,7 @@ export default function App() {
         <div style={{ maxWidth: 480, margin: "0 auto" }}>
           <h2 style={{ textAlign: "center", color: "#4cae6e", fontSize: 22, fontWeight: 900, margin: "8px 0" }}>🌍 せかいマップ</h2>
           <div style={{ ...card, padding: 12 }}>
-            <WorldMap view={view} height="34vh" selected={selC}
+            <WorldMap view={view} height="34vh" selected={selC} pinchZoom resetKey={mapCont}
               masteryColor={(c) => {
                 const m = masteredSlots(save, c.id);
                 return m === SLOTS.length ? "#ffd24d" : m > 0 ? CONT[c.cont].color : "#e8e2d5";
@@ -1779,7 +1826,7 @@ export default function App() {
 
         {/* 地図（陣地の塗り分け＋ターゲットズーム） */}
         <div style={{ flex: "none", padding: "0 12px", position: "relative", maxWidth: 480, width: "100%", margin: "0 auto", boxSizing: "border-box" }}>
-          <WorldMap view={view} target={vsQ.c} revealed={vsPhase === "feedback"} height="26vh" masteryColor={terrColor} />
+          <WorldMap view={view} target={vsQ.c} revealed={vsPhase === "feedback"} height="26vh" masteryColor={terrColor} pinchZoom resetKey={vsIdx} />
           {vsPhase === "feedback" && (
             <div style={{
               position: "absolute", left: "50%", bottom: 10, transform: "translateX(-50%)",
@@ -1875,7 +1922,7 @@ export default function App() {
               {winner === 0 ? "🔴 プレイヤー1" : "🔵 プレイヤー2"}の かち！！
             </div>
           )}
-          <WorldMap height="24vh" masteryColor={(c) => vsTerr[c.id] === 0 ? "#ff9d8f" : vsTerr[c.id] === 1 ? "#7fb5f2" : "#efe8db"} />
+          <WorldMap height="24vh" masteryColor={(c) => vsTerr[c.id] === 0 ? "#ff9d8f" : vsTerr[c.id] === 1 ? "#7fb5f2" : "#efe8db"} pinchZoom />
           <div style={{ display: "flex", justifyContent: "space-around", fontSize: 17, fontWeight: 900, marginTop: 10 }}>
             <span style={{ color: "#e8484f" }}>🔴 {counts[0]} かこく</span>
             <span style={{ color: "#3d7fe0" }}>🔵 {counts[1]} かこく</span>

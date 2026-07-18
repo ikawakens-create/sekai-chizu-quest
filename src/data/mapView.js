@@ -10,6 +10,17 @@
 
 const clampT = (v, min) => Math.min(0, Math.max(min, v));
 
+/* s/tx/tyが常にマップ範囲からはみ出さないようクランプする共通処理。
+   viewFromScaleとapplyPinchZoom（§2.2.5 ピンチズーム）の両方から使う「唯一のクランプ規則」。 */
+export function clampView(s, tx, ty, mapDims) {
+  const { w, h } = mapDims;
+  return { s, tx: clampT(tx, w - s * w), ty: clampT(ty, h - s * h) };
+}
+
+/* 手動ズーム（ピンチ）の倍率上限。単独国フォーカス(framingScale)の既定maxScaleと揃える。 */
+export const MAX_MANUAL_SCALE = 24;
+export const MIN_MANUAL_SCALE = 1;
+
 /* 単独国フォーカス画面（くにカード・Q1・Q2）向け: 対象国のbboxの短辺が
    画面（=マップviewBox）短辺の minFraction 以上を占める倍率まで自動ズームする。
    ロシアのような巨大国は既に条件を満たすため引き（低倍率）、ルクセンブルクのような
@@ -35,11 +46,7 @@ export function framingScale(bbox, mapDims, opts = {}) {
    既存viewForCountry/CONT_VIEWと同じ「はみ出さないようクランプ」方式。 */
 export function viewFromScale(s, cx, cy, mapDims) {
   const { w, h } = mapDims;
-  return {
-    s,
-    tx: clampT(w / 2 - s * cx, w - s * w),
-    ty: clampT(h / 2 - s * cy, h - s * h),
-  };
+  return clampView(s, w / 2 - s * cx, h / 2 - s * cy, mapDims);
 }
 
 /* 単独国フォーカス用の最終ビュー。§2.2.1（20%基準）＋§2.2.3（インセット要否）を合成する。 */
@@ -87,4 +94,20 @@ export function zoomStageAt(elapsedMs, opts = {}) {
   if (elapsedMs < contDelayMs) return "world";
   if (elapsedMs < settleDelayMs) return "continent";
   return "country";
+}
+
+/* §2.2.5: マップ画面（せかいマップ／たび／たいりくせいは）向けの二本指ピンチズーム。
+   baseView（ピンチ開始時点のview）と、ピンチ中心点anchor（viewBox座標系）、
+   scaleFactor（現在のピンチ距離 ÷ ピンチ開始時の距離）から新しいviewを計算する。
+   anchorの直下にある地図座標が画面上で動かない「アンカー固定ズーム」の標準式。
+   クランプはviewFromScaleと同じclampViewを再利用するため、はみ出し禁止規則は常に一貫する。
+   ズーム状態そのもの（いつ手動viewを使うか／いつ自動フレーミングへ戻すか）はUI側(App.jsx)の
+   責務とし、本関数は「今回のジェスチャーでどこまでズームしたか」だけを計算する。 */
+export function applyPinchZoom(baseView, anchor, scaleFactor, mapDims, opts = {}) {
+  const { minScale = MIN_MANUAL_SCALE, maxScale = MAX_MANUAL_SCALE } = opts;
+  const { s: s0, tx: tx0, ty: ty0 } = baseView;
+  const s1 = Math.min(Math.max(s0 * scaleFactor, minScale), maxScale);
+  const mapX = (anchor.x - tx0) / s0;
+  const mapY = (anchor.y - ty0) / s0;
+  return clampView(s1, anchor.x - s1 * mapX, anchor.y - s1 * mapY, mapDims);
 }
