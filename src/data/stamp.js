@@ -3,7 +3,7 @@
    （Math.random禁止。回転・かすれは hash(id+date) でシードした mulberry32 由来）。
    country = { id, cont, nameKana }（App.jsx側で組み立て済みの表示用フィールドを渡す想定。
    ja.js/世界地図データそのものへの依存はPR1のスコープ外なので持たない）。 */
-import { souvenirOf } from "./souvenirs.js";
+import { souvenirOf, souvenirDisplay } from "./souvenirs.js";
 import { mulberry32, hashString } from "./rng.js";
 
 export const STAMP_SHAPES = ["circle", "roundedSquare", "hexagon", "ellipse", "shield"];
@@ -65,11 +65,19 @@ export function makeStamp(country, dateStr, opts = {}) {
 
   const goldLayer = gold ? ring(shape, GOLD_INK, 0.85, rotate + goldRotate) : "";
 
+  /* HANDOFF v2.3 §6.2差し替え対応: img有無の出し分けはsouvenirDisplay（souvenirs.js）に
+     一本化する（HTML文脈のSouvenirコンポーネントと同じ判定を共有）。SVG文脈なので
+     imgありは<image href>、無しは従来どおり<text>で絵文字を出す。 */
+  const disp = souvenirDisplay(souvenir);
+  const souvenirMark = disp.kind === "img"
+    ? `<image href="${disp.src}" x="40" y="46" width="40" height="40" />`
+    : `<text x="60" y="66" font-size="22">${disp.text}</text>`;
+
   return `<svg viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${nameKana}のスタンプ">
   ${ring(shape, ink, opacity, rotate)}
   <g transform="rotate(${rotate} 60 60)" fill="${ink}" opacity="${opacity.toFixed(2)}" text-anchor="middle" font-family="sans-serif">
     <text x="60" y="44" font-size="14" font-weight="700">${nameKana}</text>
-    <text x="60" y="66" font-size="22">${souvenir.e}</text>
+    ${souvenirMark}
     <text x="60" y="86" font-size="10" letter-spacing="2">${fmtDate(dateStr)}</text>
     <text x="60" y="100" font-size="6" opacity="0.6">${id}</text>
   </g>

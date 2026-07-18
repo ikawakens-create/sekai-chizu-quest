@@ -73,7 +73,7 @@ replaceOnce(
 `import {
   buildCustomsQueue, advanceCustomsQueue, applyCustomsAnswer,
 } from "./data/customs.js";\n`, "", "customs import");
-replaceOnce(`import { souvenirOf, SOUVENIR_NOTES } from "./data/souvenirs.js";\n`, "", "souvenirs import");
+replaceOnce(`import { souvenirOf, souvenirDisplay, SOUVENIR_NOTES } from "./data/souvenirs.js";\n`, "", "souvenirs import");
 replaceOnce(`import { makeStamp, applyStamp } from "./data/stamp.js";\n`, "", "stamp import");
 replaceOnce(
 `import {
@@ -155,6 +155,15 @@ replaceOnce(
    choices/flag-groups/trips/trip/mapViewは既存モジュールで、これまで未インラインのまま
    ガードに引っかかっていたためここで一括解消する。 */
 const rngInline = rng.replace(/^export /gm, "");
+
+/* おみやげ画像（HANDOFF v2.3 §6.2差し替え対応）: Artifactはファイルを同梱できないため、
+   flags/と違って絵文字へ落とさず、img参照をbase64 data URIへ埋め込んでそのまま機能させる
+   （サイズ増は許容。souvenirImgSrcはdata:始まりの値をそのまま通すため二重変換されない）。 */
+souvenirs = souvenirs.replace(/img:\s*"([^"]+\.svg)"/g, (m, file) => {
+  const svg = fs.readFileSync(`pwa/souvenirs/${file}`, "utf8");
+  const b64 = Buffer.from(svg, "utf8").toString("base64");
+  return `img: "data:image/svg+xml;base64,${b64}"`;
+});
 const souvenirsInline = souvenirs.replace(/^export /gm, "");
 
 choices = renameIdentifier(choices, "shuffle", "choicesShuffle", "choices.shuffle (App.jsxのshuffleと衝突)");
@@ -166,7 +175,7 @@ const tripsInline = trips.replace(/^export /gm, "");
 mapView = renameIdentifier(mapView, "viewForCountry", "computeCountryView", "mapView.viewForCountry (App.jsxのラッパーと衝突)");
 const mapViewInline = mapView.replace(/^export /gm, "");
 
-stamp = stripImport(stamp, `import { souvenirOf } from "./souvenirs.js";\n`, "stamp->souvenirs");
+stamp = stripImport(stamp, `import { souvenirOf, souvenirDisplay } from "./souvenirs.js";\n`, "stamp->souvenirs");
 stamp = stripImport(stamp, `import { mulberry32, hashString } from "./rng.js";\n`, "stamp->rng");
 const stampInline = stamp.replace(/^export /gm, "");
 
