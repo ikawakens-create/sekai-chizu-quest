@@ -63,9 +63,21 @@ test("makeStamp: ひらがな国名を主役として大きく含む", () => {
   assert.ok(svg.includes(">にほん<"));
 });
 
-test("makeStamp: おみやげ絵文字を含む（JPNは🍣）", () => {
+test("makeStamp: img未指定の国は従来どおり絵文字<text>で表示する（後方互換・AUSは🐨）", () => {
+  const svg = makeStamp(AUS, "2026-07-18");
+  assert.ok(svg.includes("🐨"));
+  assert.ok(!svg.includes("<image"));
+});
+
+test("makeStamp: souvenirsにimgがある国（JPN）は絵文字<text>ではなく<image href>で表示する", () => {
   const svg = makeStamp(JPN, "2026-07-18");
-  assert.ok(svg.includes("🍣"));
+  assert.ok(svg.includes("<image href="));
+  assert.ok(!svg.includes(">🍣<"));
+});
+
+test("makeStamp: img指定時のhrefはsouvenirImgSrcの解決結果（./souvenirs/配下）", () => {
+  const svg = makeStamp(JPN, "2026-07-18");
+  assert.ok(svg.includes('<image href="./souvenirs/jpn.svg"'));
 });
 
 test("makeStamp: ISO3コードを小さく含む（装飾）", () => {

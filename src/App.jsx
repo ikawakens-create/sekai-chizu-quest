@@ -27,7 +27,7 @@ import {
 import {
   buildCustomsQueue, advanceCustomsQueue, applyCustomsAnswer,
 } from "./data/customs.js";
-import { souvenirOf, SOUVENIR_NOTES } from "./data/souvenirs.js";
+import { souvenirOf, souvenirDisplay, SOUVENIR_NOTES } from "./data/souvenirs.js";
 import { makeStamp, applyStamp } from "./data/stamp.js";
 import {
   viewForCountry as computeCountryView, viewForCountries, showInsetFor, applyPinchZoom, highlightModeFor,
@@ -419,6 +419,25 @@ function Flag({ c, w = 96, style }) {
   return (
     <img src={`./flags/${c.flag}.svg`} alt="" width={w} height={w * 0.75}
       style={{ borderRadius: 6, boxShadow: "0 2px 6px rgba(0,0,0,.2)", border: "1px solid rgba(0,0,0,.1)", background: "#fff", ...style }} />
+  );
+}
+
+/* ---------- おみやげ表示（HANDOFF v2.3 §6.2差し替え対応: 画像フォールバックの器）
+   img有無の出し分けはsouvenirDisplay（souvenirs.js）に一本化する。HTML文脈の
+   唯一の入口としてここに置き、獲得演出・ぜいかん・（将来の）パスポート画面が
+   すべてこのコンポーネント経由で表示する。 ---------- */
+function Souvenir({ souvenir, size = 28, style }) {
+  const disp = souvenirDisplay(souvenir);
+  if (disp.kind === "img") {
+    return (
+      <img src={disp.src} alt="" loading="lazy" width={size} height={size}
+        style={{ display: "inline-block", verticalAlign: "middle", ...style }} />
+    );
+  }
+  return (
+    <span style={{ fontSize: size, lineHeight: 1, verticalAlign: "middle", ...style }}>
+      {disp.text}
+    </span>
   );
 }
 
@@ -1394,7 +1413,7 @@ export default function App() {
                 <div style={{ fontSize: 12.5, fontWeight: 700, color: "#a86fe0", marginTop: 6 }}><Ruby t={SOUVENIR_NOTES[country.id]} /></div>
               )}
               <div style={{ fontSize: 16, fontWeight: 900, color: "#e8a000", marginTop: 12 }}>
-                おみやげ ゲット！ {souvenir.e} <Ruby t={souvenir.n} />
+                おみやげ ゲット！ <Souvenir souvenir={souvenir} size={26} /> <Ruby t={souvenir.n} />
               </div>
               <div style={{ width: 116, height: 116, margin: "12px auto 0" }} dangerouslySetInnerHTML={{ __html: stampSvg }} />
               {stampEntry && stampEntry.gold && (
@@ -1599,7 +1618,7 @@ export default function App() {
             </div>
             <div style={{ ...card, margin: "0 auto", textAlign: "center" }}>
               <div style={{ fontSize: 15, fontWeight: 800, color: "#5a7ba0", marginBottom: 6 }}>
-                <Ruby t={"この"} /> {item.souvenir.e} <Ruby t={"、どこで もらった？"} />
+                <Ruby t={"この"} /> <Souvenir souvenir={item.souvenir} size={22} /> <Ruby t={"、どこで もらった？"} />
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginTop: 8 }}>
                 {item.choices.map((ch) => {
