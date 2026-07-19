@@ -16,6 +16,7 @@ let flagGroups = fs.readFileSync("src/data/flag-groups.js", "utf8");
 let trips = fs.readFileSync("src/data/trips.js", "utf8");
 let mapView = fs.readFileSync("src/data/mapView.js", "utf8");
 let stamp = fs.readFileSync("src/data/stamp.js", "utf8");
+let passport = fs.readFileSync("src/data/passport.js", "utf8");
 let trip = fs.readFileSync("src/data/trip.js", "utf8");
 let shinsa = fs.readFileSync("src/data/shinsa.js", "utf8");
 let customs = fs.readFileSync("src/data/customs.js", "utf8");
@@ -75,6 +76,8 @@ replaceOnce(
 } from "./data/customs.js";\n`, "", "customs import");
 replaceOnce(`import { souvenirOf, souvenirDisplay, SOUVENIR_NOTES } from "./data/souvenirs.js";\n`, "", "souvenirs import");
 replaceOnce(`import { makeStamp, applyStamp } from "./data/stamp.js";\n`, "", "stamp import");
+replaceOnce(`import { orderedStamps, paginateStamps, lastRouteIds, allRouteIds } from "./data/passport.js";\n`, "", "passport import");
+replaceOnce(`import { hashString } from "./data/rng.js";\n`, "", "rng(hashString) import");
 replaceOnce(
 `import {
   viewForCountry as computeCountryView, viewForCountries, showInsetFor, applyPinchZoom, highlightModeFor,
@@ -179,6 +182,8 @@ stamp = stripImport(stamp, `import { souvenirOf, souvenirDisplay } from "./souve
 stamp = stripImport(stamp, `import { mulberry32, hashString } from "./rng.js";\n`, "stamp->rng");
 const stampInline = stamp.replace(/^export /gm, "");
 
+const passportInline = passport.replace(/^export /gm, "");
+
 trip = stripImport(trip, `import { TRIPS } from "./trips.js";\n`, "trip->trips");
 trip = renameIdentifier(trip, "SLOTS", "LEGACY_SLOTS", "trip.SLOTS (App.jsxのSLOTSと衝突)");
 trip = renameIdentifier(trip, "progOf", "legacyProgOf", "trip.progOf (App.jsxのエイリアスに合わせる)");
@@ -222,6 +227,7 @@ src = importLine +
   "\n/* ======== たびパック定義（trips.js） ======== */\n" + tripsInline + "\n" +
   "\n/* ======== 地図表示ロジック（mapView.js） ======== */\n" + mapViewInline + "\n" +
   "\n/* ======== パスポートスタンプ（stamp.js） ======== */\n" + stampInline + "\n" +
+  "\n/* ======== パスポート画面ロジック（passport.js） ======== */\n" + passportInline + "\n" +
   "\n/* ======== たびの土台ロジック（trip.js） ======== */\n" + tripInline + "\n" +
   "\n/* ======== しんさ3れん（shinsa.js） ======== */\n" + shinsaInline + "\n" +
   "\n/* ======== ぜいかんけんさ（customs.js） ======== */\n" + customsInline + "\n" +

@@ -29,6 +29,8 @@ import {
 } from "./data/customs.js";
 import { souvenirOf, souvenirDisplay, SOUVENIR_NOTES } from "./data/souvenirs.js";
 import { makeStamp, applyStamp } from "./data/stamp.js";
+import { orderedStamps, paginateStamps, lastRouteIds, allRouteIds } from "./data/passport.js";
+import { hashString } from "./data/rng.js";
 import {
   viewForCountry as computeCountryView, viewForCountries, showInsetFor, applyPinchZoom, highlightModeFor,
   layoutPins, mapUnitsForScreenPx, PIN_MIN_TAP_PX,
@@ -268,7 +270,7 @@ function CountryInset({ c, s, tx, ty }) {
    resetKeyが変わった（次の問題／画面遷移）タイミングで自動的に破棄し、自動フレーミングへ戻す。 */
 function WorldMap({ view = WORLD_VIEW, target, revealed, animate = true, height = "30vh",
                     masteryColor, onTapCountry, tappableCont, selected, pinchZoom, resetKey,
-                    pins, onTapPin }) {
+                    pins, onTapPin, routeIds }) {
   const svgRef = useRef(null);
   const pointersRef = useRef(new Map());
   const gestureRef = useRef(null);
@@ -323,6 +325,9 @@ function WorldMap({ view = WORLD_VIEW, target, revealed, animate = true, height 
     return mapUnitsForScreenPx(PIN_MIN_TAP_PX, viewportShortPx, mapShortSide, s);
   };
   const PIN_COLOR = { neutral: "#ff5c46", picked: "#ffb020", correct: "#3f9c3a", wrong: "#d05a4a" };
+  /* HANDOFF v2.3 §6.2: 「今回の航跡」用の縁取り（塗りはmasteryColorのまま・別レイヤーで重ねる）。
+     routeIdsに入っている国のみ、isTarget/selected（そちらが優先）でない場合に付ける。 */
+  const isRoute = (id) => !!routeIds && routeIds.has(id);
 
   return (
     <div style={{
@@ -352,8 +357,8 @@ function WorldMap({ view = WORLD_VIEW, target, revealed, animate = true, height 
               : CONT[c.cont].color;
             return (
               <path key={c.id} d={c.d} fill={fill}
-                stroke={isTarget ? "#c0392b" : "none"}
-                strokeWidth={1.6 / s}
+                stroke={isTarget ? "#c0392b" : isRoute(c.id) ? "#3dae7a" : "none"}
+                strokeWidth={isTarget ? 1.6 / s : isRoute(c.id) ? 2.2 / s : 1.6 / s}
                 strokeLinejoin="round"
                 style={isTarget && !revealed ? { animation: "targetBlink 1s ease-in-out infinite" } : {}}
               />
@@ -368,7 +373,8 @@ function WorldMap({ view = WORLD_VIEW, target, revealed, animate = true, height 
             return (
               <circle key={c.id} cx={c.cx} cy={c.cy} r={(isTarget ? 7 : 3.2) / s}
                 fill={isTarget ? (revealed ? "#ffd83d" : "#ff5c46") : selected && selected.id === c.id ? "#ffd83d" : masteryColor ? masteryColor(c) : "#fff"}
-                stroke={isTarget ? "#c0392b" : "#8fb6d4"} strokeWidth={1.2 / s}
+                stroke={isTarget ? "#c0392b" : isRoute(c.id) ? "#3dae7a" : "#8fb6d4"}
+                strokeWidth={isTarget ? 1.2 / s : isRoute(c.id) ? 2 / s : 1.2 / s}
                 style={isTarget && !revealed ? { animation: "pulse 1s ease-in-out infinite" } : {}}
               />
             );
@@ -463,6 +469,23 @@ const sndCorrect = () => { tone(880, 0, 0.12); tone(1320, 0.12, 0.22); };
 const sndWrong = () => { tone(220, 0, 0.25, "square", 0.08); tone(180, 0.2, 0.3, "square", 0.08); };
 const sndSpecial = () => { tone(196, 0, 0.16, "square", 0.14); tone(392, 0.3, 0.4, "triangle", 0.16); };
 const sndGacha = () => { for (let i = 0; i < 6; i++) tone(300 + Math.random() * 500, i * 0.09, 0.07, "triangle", 0.1); };
+/* HANDOFF v2.3 §6.2: パスポート押印の「シュポッ」= 短いノイズバースト＋低音。
+   スタンプの見た目（makeStamp）はMath.random禁止だが、この効果音はテスト対象外の
+   一過性フィードバックなのでsndGacha同様Math.randomでよい。 */
+const sndStamp = () => {
+  const ctx = getCtx(); if (!ctx) return;
+  const dur = 0.09;
+  const buf = ctx.createBuffer(1, Math.round(ctx.sampleRate * dur), ctx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
+  const noise = ctx.createBufferSource(); noise.buffer = buf;
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.22, ctx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + dur);
+  noise.connect(g); g.connect(ctx.destination);
+  noise.start();
+  tone(85, 0.015, 0.16, "sine", 0.24);
+};
 const sndReveal = (ra) => {
   const lv = RARITY[ra] ? RARITY[ra].lv : 0;
   const scale = [523, 587, 659, 784, 880, 1047, 1175, 1319, 1568];
@@ -654,6 +677,13 @@ export default function App() {
   const [customsPicked, setCustomsPicked] = useState(null);
   const [customsLastOk, setCustomsLastOk] = useState(false);
   const customsLockRef = useRef(false);
+
+  /* パスポート画面（HANDOFF v2.3 §6.2） */
+  const [passportPage, setPassportPage] = useState(0);       // 0=表紙, 1..N=スタンプ見開き, 最後=たびのきろく
+  const [passportContFilter, setPassportContFilter] = useState(null); // たびのきろくページの大陸フィルタ（null=ぜんぶ）
+  const [passportOpenId, setPassportOpenId] = useState(null); // タップで全日付を表示中のスタンプid
+  const passportTouchXRef = useRef(null);
+  const openPassport = () => { setPassportPage(0); setPassportContFilter(null); setPassportOpenId(null); setScreen("passport"); };
 
   useEffect(() => { setSaveDoc(loadSaveV2()); }, []);
   const updateSave = useCallback((up) => {
@@ -868,6 +898,7 @@ export default function App() {
     const gold = srIsMastered(save, country.id);
     updateSave((s) => applyStamp(s, country.id, todayDateStr(), gold));
     setTripStamps((prev) => [...prev, { id: country.id, gold }]);
+    sndStamp(); // §6.2: 押印演出「シュポッ」（画面微シェイクはwelcome画面側でkey再マウントにより毎回再生）
     setTripScene("welcome");
   };
 
@@ -1032,12 +1063,15 @@ export default function App() {
     @keyframes spinHandle { from{transform:rotate(0)} to{transform:rotate(720deg)} }
     @keyframes rainbowBg { 0%{filter:hue-rotate(0)} 100%{filter:hue-rotate(360deg)} }
     @keyframes glowPulse { 0%,100%{filter:brightness(1)} 50%{filter:brightness(1.3)} }
+    @keyframes stampShake { 0%,100%{transform:translate(0,0)} 20%{transform:translate(-3px,2px)} 40%{transform:translate(3px,-2px)} 60%{transform:translate(-2px,1px)} 80%{transform:translate(2px,-1px)} }
     @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
     ruby rt { user-select: none; }
   `;
 
   /* ===== ホーム ===== */
   if (screen === "home") {
+    /* §6.2: ホームの世界地図に残す航跡は直近1旅分のみ（全履歴はパスポート画面に閉じる） */
+    const homeRouteIds = new Set(lastRouteIds(save.passport.routes));
     return (
       <div style={wrap}><style>{css}</style>
         <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -1065,7 +1099,7 @@ export default function App() {
           <div style={{ fontSize: 30, animation: "floaty 2.4s ease-in-out infinite", display: "inline-block" }}>🌍✨</div>
         </div>
         <div style={card}>
-          <WorldMap height="24vh" masteryColor={(c) => {
+          <WorldMap height="24vh" routeIds={homeRouteIds} masteryColor={(c) => {
             const m = masteredSlots(save, c.id);
             return m === SLOTS.length ? "#ffd24d" : m > 0 ? CONT[c.cont].color : "#e8e2d5";
           }} />
@@ -1087,8 +1121,9 @@ export default function App() {
           <BigBtn color="#e8484f" onClick={() => setScreen("vsSetup")} style={{ fontSize: 21 }}>⚔️ たいりくせいは（ふたりで たいせん）</BigBtn>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <BigBtn color="#5aa7e8" onClick={() => setScreen("book")}>📒 シールずかん</BigBtn>
-            <BigBtn color="#8aa0b8" onClick={() => { setMapCont(null); setSelC(null); setScreen("map"); }}>🌍 せかいマップ</BigBtn>
+            <BigBtn color="#c9971f" onClick={openPassport}>📕 パスポート</BigBtn>
           </div>
+          <BigBtn color="#8aa0b8" onClick={() => { setMapCont(null); setSelC(null); setScreen("map"); }}>🌍 せかいマップ</BigBtn>
         </div>
         <div style={{ ...card, marginTop: 14, display: "flex", justifyContent: "space-around", textAlign: "center", fontSize: 13, fontWeight: 700 }}>
           <div>🎮 あそんだ<br /><span style={{ fontSize: 20, color: "#2f7fd4" }}>{save.plays}</span> かい</div>
@@ -1395,7 +1430,8 @@ export default function App() {
         todayDateStr(), { gold: stampEntry ? stampEntry.gold : false }
       );
       return (
-        <div style={{ ...wrap, minHeight: "auto", height: "100dvh", padding: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}
+        <div key={`welcome-${country.id}-${tripStamps.length}`}
+          style={{ ...wrap, minHeight: "auto", height: "100dvh", padding: 0, display: "flex", flexDirection: "column", overflow: "hidden", animation: "stampShake .5s ease-out" }}
           onClick={advanceFromWelcome}>
           <style>{css}</style>
           {confetti && <Confetti />}
@@ -1712,6 +1748,7 @@ export default function App() {
             )}
             <div style={{ display: "grid", gap: 9, marginTop: 14 }}>
               <BigBtn color="#3dae7a" onClick={() => setScreen("tripHome")}>🧳 つぎの たびへ</BigBtn>
+              <BigBtn color="#c9971f" onClick={openPassport}>📕 パスポートを みる</BigBtn>
               <BigBtn color="#8aa0b8" onClick={() => setScreen("home")}>🏠 ホーム</BigBtn>
             </div>
           </div>
@@ -1997,6 +2034,150 @@ export default function App() {
             );
           })}
           <BigBtn color="#8aa0b8" onClick={() => setScreen("home")}>🏠 ホームへ もどる</BigBtn>
+        </div>
+      </div>
+    );
+  }
+
+  /* ===== パスポート（HANDOFF v2.3 §6.2） =====
+     表紙 → スタンプ見開き（1ページ6個・押印順）×N → 最終ページ「たびのきろく」（全航跡・大陸フィルタ）。
+     並び順・ページ分割・航跡集計はsrc/data/passport.js（純粋関数・テスト済み）に委譲する。
+     1画面スクロールなし（welcome画面と同じ100dvh固定＋flex column パターン）。 */
+  if (screen === "passport") {
+    const stampList = orderedStamps(save.passport.stamps);
+    const spreadPages = paginateStamps(stampList);
+    const totalPages = spreadPages.length + 2; // 表紙 + 見開きN + たびのきろく
+    const pageIdx = Math.max(0, Math.min(passportPage, totalPages - 1));
+    const kind = pageIdx === 0 ? "cover" : pageIdx === totalPages - 1 ? "routes" : "spread";
+    const spread = kind === "spread" ? spreadPages[pageIdx - 1] : null;
+    const profileName = save.name === "（入力）" ? (saveDoc.activeProfile === "p1" ? "① ひとりめ" : "② ふたりめ") : save.name;
+    const routeIdsFiltered = allRouteIds(save.passport.routes, (id) => (byId.get(id) || {}).cont, passportContFilter);
+
+    const goPrev = () => { setPassportOpenId(null); setPassportPage((p) => Math.max(0, p - 1)); };
+    const goNext = () => { setPassportOpenId(null); setPassportPage((p) => Math.min(totalPages - 1, p + 1)); };
+    const onTouchStart = (e) => { passportTouchXRef.current = e.touches[0].clientX; };
+    const onTouchEnd = (e) => {
+      const startX = passportTouchXRef.current;
+      passportTouchXRef.current = null;
+      if (startX == null) return;
+      const dx = e.changedTouches[0].clientX - startX;
+      if (Math.abs(dx) < 40) return;
+      if (dx < 0) goNext(); else goPrev();
+    };
+    /* スタンプ配置の「少しラフ」なずれ（国idから決定的に導出。makeStamp内のインク回転とは別レイヤー） */
+    const rough = (id) => {
+      const h = hashString(id);
+      return { rot: (h % 9) - 4, dx: ((h >> 4) % 7) - 3, dy: ((h >> 8) % 7) - 3 };
+    };
+
+    return (
+      <div style={{ ...wrap, minHeight: "auto", height: "100dvh", padding: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}
+        onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
+        <style>{css}</style>
+        <div style={{ flex: "none", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px 4px", maxWidth: 480, margin: "0 auto", width: "100%", boxSizing: "border-box" }}>
+          <h2 style={{ margin: 0, color: "#c9971f", fontSize: 19, fontWeight: 900 }}>📕 せかいパスポート</h2>
+          <button onClick={() => setScreen("home")} style={{
+            border: "none", background: "#eef2f7", color: "#5a7ba0", fontWeight: 800, fontSize: 12.5,
+            borderRadius: 999, padding: "6px 12px", fontFamily: "inherit", cursor: "pointer",
+          }}>✕ とじる</button>
+        </div>
+
+        <div style={{ flex: 1, minHeight: 0, maxWidth: 480, width: "100%", margin: "0 auto", padding: "4px 14px", boxSizing: "border-box", display: "flex", flexDirection: "column" }}>
+          {kind === "cover" && (
+            <div style={{
+              flex: 1, borderRadius: 22, background: "linear-gradient(160deg,#f3dfa0,#c9971f)",
+              boxShadow: "0 8px 22px rgba(140,100,10,.3)", display: "flex", flexDirection: "column",
+              alignItems: "center", justifyContent: "center", color: "#4a3410", textAlign: "center", padding: 18,
+            }}>
+              <div style={{ fontSize: 46 }}>🛂</div>
+              <div style={{ fontSize: 22, fontWeight: 900, letterSpacing: ".08em", marginTop: 6 }}>せかいパスポート</div>
+              <div style={{ marginTop: 14, background: "rgba(255,255,255,.55)", borderRadius: 14, padding: "8px 18px" }}>
+                <div style={{ fontSize: 11, fontWeight: 800, opacity: 0.75 }}>NAME</div>
+                <div style={{ fontSize: 18, fontWeight: 900 }}>{profileName}</div>
+              </div>
+              <div style={{ marginTop: 14, fontSize: 13, fontWeight: 800 }}>
+                🎫 スタンプ {stampList.length}こ もっているよ
+              </div>
+              <div style={{ marginTop: 16, fontSize: 12.5, fontWeight: 700, opacity: 0.85 }}>
+                <Ruby t={"▶ タップで めくろう"} />
+              </div>
+            </div>
+          )}
+
+          {kind === "spread" && spread && (
+            <div style={{ flex: 1, display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "repeat(3,1fr)", gap: 8, alignContent: "stretch" }}>
+              {spread.map((s) => {
+                const c = byId.get(s.id);
+                const r = rough(s.id);
+                const svg = makeStamp(
+                  { id: s.id, cont: c ? c.cont : "asia", nameKana: (c && (c.k || plain(c.n))) || s.id },
+                  s.dates[s.dates.length - 1], { gold: s.gold }
+                );
+                const open = passportOpenId === s.id;
+                return (
+                  <div key={s.id} onClick={() => setPassportOpenId(open ? null : s.id)} style={{
+                    borderRadius: 14, background: "#fbfdff", border: "1.5px solid #e5dfce",
+                    display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+                    padding: 4, cursor: s.dates.length > 1 ? "pointer" : "default", overflow: "hidden",
+                  }}>
+                    <div style={{ width: "78%", aspectRatio: "1/1", transform: `rotate(${r.rot}deg) translate(${r.dx}px,${r.dy}px)` }}
+                      dangerouslySetInnerHTML={{ __html: svg }} />
+                    {open && s.dates.length > 1 && (
+                      <div style={{ fontSize: 9.5, fontWeight: 700, color: "#8a9ab0", marginTop: 2, textAlign: "center" }}>
+                        {s.dates.join(" / ")}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+              {Array.from({ length: 6 - spread.length }).map((_, i) => (
+                <div key={"empty" + i} style={{ borderRadius: 14, border: "1.5px dashed #d5dfe9", opacity: 0.5 }} />
+              ))}
+            </div>
+          )}
+
+          {kind === "routes" && (
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
+              <div style={{ textAlign: "center", fontSize: 15, fontWeight: 900, color: "#3dae7a", flex: "none" }}>🗺️ たびのきろく</div>
+              <div style={{ flex: "none", display: "flex", flexWrap: "wrap", gap: 5, justifyContent: "center", margin: "6px 0" }}>
+                <button onClick={() => setPassportContFilter(null)} style={{
+                  fontSize: 11, fontWeight: 800, padding: "3px 9px", borderRadius: 999, fontFamily: "inherit",
+                  border: "2px solid #8aa0b8", background: passportContFilter === null ? "#8aa0b8" : "#fff",
+                  color: passportContFilter === null ? "#fff" : "#5a7ba0", cursor: "pointer",
+                }}>ぜんぶ</button>
+                {CONT_KEYS.map((k) => (
+                  <button key={k} onClick={() => setPassportContFilter(k)} style={{
+                    fontSize: 11, fontWeight: 800, padding: "3px 9px", borderRadius: 999, fontFamily: "inherit",
+                    border: `2px solid ${CONT[k].color}`, background: passportContFilter === k ? CONT[k].color : "#fff",
+                    color: "#4a3a2a", cursor: "pointer",
+                  }}>{CONT[k].label}</button>
+                ))}
+              </div>
+              <WorldMap height="36vh" routeIds={routeIdsFiltered} resetKey={passportContFilter}
+                masteryColor={(c) => routeIdsFiltered.has(c.id) ? CONT[c.cont].color : "#e8e2d5"} pinchZoom />
+              <div style={{ flex: "none", textAlign: "center", fontSize: 12.5, fontWeight: 800, color: "#5a7ba0", marginTop: 6 }}>
+                ✈️ おとずれた {"国"}：<span style={{ color: "#3dae7a", fontSize: 16 }}>{routeIdsFiltered.size}</span> かこく
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div style={{ flex: "none", padding: "8px 14px calc(10px + env(safe-area-inset-bottom))", maxWidth: 480, margin: "0 auto", width: "100%", boxSizing: "border-box" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button onClick={goPrev} disabled={pageIdx === 0} style={{
+              flex: "none", width: 46, height: 46, borderRadius: 14, border: "none", fontFamily: "inherit",
+              background: pageIdx === 0 ? "#e5dfce" : "#c9971f", color: "#fff", fontSize: 18, fontWeight: 900,
+              cursor: pageIdx === 0 ? "default" : "pointer",
+            }}>◀</button>
+            <div style={{ flex: 1, textAlign: "center", fontSize: 12.5, fontWeight: 800, color: "#8a7248" }}>
+              {pageIdx + 1} / {totalPages} ページ
+            </div>
+            <button onClick={goNext} disabled={pageIdx === totalPages - 1} style={{
+              flex: "none", width: 46, height: 46, borderRadius: 14, border: "none", fontFamily: "inherit",
+              background: pageIdx === totalPages - 1 ? "#e5dfce" : "#c9971f", color: "#fff", fontSize: 18, fontWeight: 900,
+              cursor: pageIdx === totalPages - 1 ? "default" : "pointer",
+            }}>▶</button>
+          </div>
         </div>
       </div>
     );
