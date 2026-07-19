@@ -1436,11 +1436,18 @@ export default function App() {
          itemを使う（末尾ちょうどの時にqueue[idx]がundefinedになるクラッシュを防ぐ） */
       const item = tripSubPhase === "feedback" ? tripAnsweredItem : tripQ.queue[tripQ.idx];
       const isLoc = item.qType === "loc";
+      const isWorldLoc = isLoc && item.locMode === "world";
       /* 致命的A（§2.2.4）: ピン4択は正解確定(feedback)まで正解を視覚的に漏らさない。
-         判定はhighlightModeFor経由に一本化する（PR2a-bisレビュー時の申し送り・混同禁止）。 */
+         判定はhighlightModeFor経由に一本化する（PR2a-bisレビュー時の申し送り・混同禁止）。
+         world/localどちらのlocModeでも致命的Aは同じ規則で適用する（qTypeのみで判定）。 */
       const mapHighlight = isLoc ? highlightModeFor({ screen: "pinChoice", phase: tripSubPhase }) : "reveal";
       const isCorrect = tripSubPhase === "feedback" && tripLastOk;
-      const view = isLoc ? viewForCountries(item.choices, MAP_DIMS)
+      /* ばしょ問2段階再設計: worldモードは常に固定の世界地図全体（子どもの地図イメージを
+         安定させるため、候補フィットで毎回変えない）。localモードは従来どおり候補フィット
+         （viewForCountries）。いずれもtripSubPhase（answer/feedback）に依存させない
+         （§2.2.1どおりQ3系は常時フィッティング優先で20%基準を適用しない）。 */
+      const view = isWorldLoc ? WORLD_VIEW
+        : isLoc ? viewForCountries(item.choices, MAP_DIMS)
         : (tripSubPhase === "feedback" || tripZoomed) ? viewForCountry(country) : WORLD_VIEW;
       const pins = isLoc ? layoutPins(item.choices, { mapDims: MAP_DIMS }).map((p) => ({
         ...p,
@@ -1493,11 +1500,12 @@ export default function App() {
 
           <div style={{ flex: 1, overflowY: "auto", WebkitOverflowScrolling: "touch", padding: "8px 14px", paddingBottom: tripSubPhase === "feedback" ? 88 : 10, maxWidth: 480, width: "100%", margin: "0 auto", boxSizing: "border-box" }}>
             <div style={{ ...card, margin: 0, padding: "10px 12px", opacity: tripShowQ || tripSubPhase === "feedback" ? 1 : 0, transition: "all .3s" }}>
-              <div style={{ fontWeight: 900, fontSize: 15, color: "#2f9fd4", marginBottom: 6 }}>
-                {item.qType === "flag" && <Ruby t={"🚩 この こっきは どれ？"} />}
-                {item.qType === "name" && <Ruby t={"🗺️ くにの なまえは？"} />}
-                {isLoc && <Ruby t={"📍 ばしょは どこ？"} />}
-              </div>
+              {!isLoc && (
+                <div style={{ fontWeight: 900, fontSize: 15, color: "#2f9fd4", marginBottom: 6 }}>
+                  {item.qType === "flag" && <Ruby t={"🚩 この こっきは どれ？"} />}
+                  {item.qType === "name" && <Ruby t={"🗺️ くにの なまえは？"} />}
+                </div>
+              )}
 
               {item.qType === "name" && item.showFlagContext && (
                 <div style={{ display: "flex", justifyContent: "center", marginBottom: 8 }}>
@@ -1505,9 +1513,18 @@ export default function App() {
                 </div>
               )}
 
+              {/* ばしょ問2段階再設計: 国名を問題文の主語として常時表示する（showNameContextは
+                  全locで常にtrue）。worldモードは「せかいの どこ？」、localモードは
+                  「どこ？」で問い方を変える（§2.1提案・Opusレビューで確定）。国旗は出さない
+                  （逆走で最後に出るこっき問の答えを漏らさないため）。 */}
               {isLoc && item.showNameContext && (
-                <div style={{ textAlign: "center", fontSize: 21, fontWeight: 900, color: "#2a3a4a", marginBottom: 8 }}>
-                  {country.k ? <ruby>{country.n}<rt style={{ fontSize: "0.5em", color: "#7a8aa0" }}>{country.k}</rt></ruby> : country.n}
+                <div style={{ textAlign: "center", marginBottom: 8 }}>
+                  <div style={{ fontSize: 21, fontWeight: 900, color: "#2a3a4a" }}>
+                    {country.k ? <ruby>{country.n}<rt style={{ fontSize: "0.5em", color: "#7a8aa0" }}>{country.k}</rt></ruby> : country.n}
+                  </div>
+                  <div style={{ fontWeight: 900, fontSize: 15, color: "#2f9fd4", marginTop: 2 }}>
+                    📍 <Ruby t={isWorldLoc ? "は せかいの どこ？" : "は どこ？"} />
+                  </div>
                 </div>
               )}
 

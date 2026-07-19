@@ -45,24 +45,35 @@ export function subquestionOrderFor(direction) {
   return direction === "reverse" ? [...REVERSE_ORDER] : [...FORWARD_ORDER];
 }
 
+/* ばしょ問(loc)2段階再設計（実機フィードバック・提案・Opusレビューで確定）:
+   序盤(forward かつ stageOfBeforeVisit≤1)はおおまかな位置感覚を養う"world"モード
+   （「○○は せかいの どこ？」・誤答は別大陸から・地図は常に固定の世界全体ビュー）、
+   それ以降(forward stage≥2 / reverse)は同地域内で見分ける"local"モード
+   （「○○は どこ？」・誤答は同地域＝現状維持・地図は候補フィット viewForCountries）。
+   しきい値(≤1)は提案であり、別解が妥当と判断されれば本関数のみの変更で対応できる。 */
+export function locModeFor(direction, stageOfBeforeVisit) {
+  return direction === "forward" && stageOfBeforeVisit <= 1 ? "world" : "local";
+}
+
 /* §2表 + 再訪の出し分けにもとづく誤答優先度（choices.jsのdifficultyへマッピング）。
    [実装解釈メモ]
-   - reverse（辛口・試験方向）: HANDOFF原文「誤答は同フラググループ→同大陸優先」を、
-     全3問に一律 choices.js の "hard" (グループ最優先) として適用する。
-   - forward・初訪問(stageOf=0): §2表の各問固有の基本戦略をそのまま適用
-     （flag=easy/別大陸別グループ優先、name=normal/既習国優先、loc=normal/同大陸寄り）。
-   - forward・再訪(stageOf 1〜2): 「誤答選択肢のみ辛口化」を、基本戦略から1段階厳しくする
-     形で解釈（flag: easy→normal、name/loc: normal→hard）。
+   - loc: locModeForが決める。world="easy"（choices.jsのeasyはotherPool＝別大陸を最優先
+     するため、狙いどおりピンが世界に散らばる）、local="hard"（同フラググループ→同大陸優先の
+     辛口化。旧来のforward再訪/reverseの挙動をそのまま「local」として引き継ぐ＝現状維持）。
+   - flag/nameはloc新設計の影響を受けない（従来どおり）。
+     reverse（辛口・試験方向）: HANDOFF原文「誤答は同フラググループ→同大陸優先」を、
+     "hard" (グループ最優先) として適用する。
+     forward・初訪問(stageOf=0): §2表の基本戦略（flag=easy/別大陸別グループ優先、
+     name=normal/既習国優先）をそのまま適用。
+     forward・再訪(stageOf 1〜2): 「誤答選択肢のみ辛口化」を、基本戦略から1段階厳しくする
+     形で解釈（flag: easy→normal、name: normal→hard）。
    この段階付け方は本文に数値的な明記が無いための実装判断であり、Opusレビュー時に
    別解が妥当と判断されれば本関数のみの変更で対応できるよう純粋関数として切り出している。 */
 export function distractorDifficultyFor(qType, direction, stageOfBeforeVisit) {
+  if (qType === "loc") return locModeFor(direction, stageOfBeforeVisit) === "world" ? "easy" : "hard";
   if (direction === "reverse") return "hard";
-  if (stageOfBeforeVisit === 0) {
-    if (qType === "flag") return "easy";
-    return "normal";
-  }
-  if (qType === "flag") return "normal";
-  return "hard";
+  if (stageOfBeforeVisit === 0) return qType === "flag" ? "easy" : "normal";
+  return qType === "flag" ? "normal" : "hard";
 }
 
 /* §2「こっき2〜4択（隠し難易度で可変）」の解釈: 低群(easy)=2択・ふつう(normal)=3択・高群(hard)=4択。
@@ -101,15 +112,13 @@ function buildSubquestion(country, countries, flagGroups, opts) {
     slot: qType, qType, direction, stageOfBeforeVisit, attemptNumber,
     correctId: country.id, choiceCount: count, choices, learnedIds,
     showFlagContext: qType === "name" && direction === "forward", // §2 Q2: 正解の国旗を画面に残す（順走のみ・手がかり連鎖）
-    /* 実機バグ修正（プレイ不能・高優先）: 逆走(ばしょ→なまえ→こっき)はばしょ問が
-       手がかり連鎖なしで先頭に来るため、それ以前にflag/nameどちらも一度も提示されず
-       「どの国を探せばいいか」が一切わからないまま出題される（ピンが4つとも無地・
-       地図の強調表示もcandidatesEqualで封じられているため）。ばしょ問だけ、対象の
-       国名（ふりがな）を最小限の手がかりとして表示する。なまえ問の答えを先出しする形には
-       なるが、①こっき問（さいごに出題・辛口の同一フラググループ誤答で単独に判定される）
-       は無影響、②逆走はそもそも一度は習得済み(stageOf=3)の国の再確認であり初出ではない、
-       という2点から実害は小さいと判断（提案。Opusレビューで確定）。 */
-    showNameContext: qType === "loc" && direction === "reverse",
+    /* ばしょ問2段階再設計に伴い一般化: 実機バグ修正（逆走のばしょ問が先頭・手がかりなしで
+       出題されどの国か一切わからずプレイ不能になる問題）でreverse限定に追加した表示だが、
+       forwardのworld/localいずれのばしょ問も問題文自体に対象国名を含める設計（"○○は せかいの
+       どこ？"/"○○は どこ？"）に統一したため、qType==="loc"であれば常にtrueにする。
+       国旗は出さない（逆走で最後に出るこっき問の答えを漏らさないため、名前のみ）。 */
+    showNameContext: qType === "loc",
+    locMode: qType === "loc" ? locModeFor(direction, stageOfBeforeVisit) : null,
   };
 }
 
