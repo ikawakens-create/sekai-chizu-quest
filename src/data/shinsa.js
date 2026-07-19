@@ -101,6 +101,15 @@ function buildSubquestion(country, countries, flagGroups, opts) {
     slot: qType, qType, direction, stageOfBeforeVisit, attemptNumber,
     correctId: country.id, choiceCount: count, choices, learnedIds,
     showFlagContext: qType === "name" && direction === "forward", // §2 Q2: 正解の国旗を画面に残す（順走のみ・手がかり連鎖）
+    /* 実機バグ修正（プレイ不能・高優先）: 逆走(ばしょ→なまえ→こっき)はばしょ問が
+       手がかり連鎖なしで先頭に来るため、それ以前にflag/nameどちらも一度も提示されず
+       「どの国を探せばいいか」が一切わからないまま出題される（ピンが4つとも無地・
+       地図の強調表示もcandidatesEqualで封じられているため）。ばしょ問だけ、対象の
+       国名（ふりがな）を最小限の手がかりとして表示する。なまえ問の答えを先出しする形には
+       なるが、①こっき問（さいごに出題・辛口の同一フラググループ誤答で単独に判定される）
+       は無影響、②逆走はそもそも一度は習得済み(stageOf=3)の国の再確認であり初出ではない、
+       という2点から実害は小さいと判断（提案。Opusレビューで確定）。 */
+    showNameContext: qType === "loc" && direction === "reverse",
   };
 }
 

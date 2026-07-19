@@ -1505,6 +1505,12 @@ export default function App() {
                 </div>
               )}
 
+              {isLoc && item.showNameContext && (
+                <div style={{ textAlign: "center", fontSize: 21, fontWeight: 900, color: "#2a3a4a", marginBottom: 8 }}>
+                  {country.k ? <ruby>{country.n}<rt style={{ fontSize: "0.5em", color: "#7a8aa0" }}>{country.k}</rt></ruby> : country.n}
+                </div>
+              )}
+
               {item.qType === "flag" && (
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
                   {item.choices.map((ch) => {
