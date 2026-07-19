@@ -330,3 +330,24 @@ test("layoutPins: 出力順序は入力順序と対応する（idで検証）", 
   const pins = layoutPins(candidates, { minSeparation: 20 });
   assert.deepEqual(pins.map((p) => p.id), ["A", "B", "C"]);
 });
+
+/* ばしょ問(loc)"world"モード（shinsa.js locModeFor）: 誤答は別大陸優先だが、
+   大陸境界付近の国どうしは地理的に近接しうる（例: 国境を接する隣国が別大陸区分の
+   こともある）。layoutPinsは候補の大陸区分を一切見ないため、worldモードの候補集合でも
+   同じ重なり保険がそのまま効くことを確認する（locMode自体はApp.jsx側で候補choicesを
+   layoutPinsに渡すだけで、layoutPins呼び出しはlocModeを分岐しない）。 */
+test("layoutPins: worldモード相当（大陸をまたぐ候補）でも近接していればピンが重ならない", () => {
+  const worldCandidates = [
+    { id: "TARGET", cont: "asia", cx: 500, cy: 200 },
+    { id: "NEARBY_OTHER_CONT", cont: "europe", cx: 503, cy: 201 }, // 別大陸だが地理的には近接
+    { id: "FAR_1", cont: "africa", cx: 100, cy: 400 },
+    { id: "FAR_2", cont: "namerica", cx: 800, cy: 100 },
+  ];
+  const pins = layoutPins(worldCandidates, { minSeparation: 20 });
+  for (let i = 0; i < pins.length; i++) {
+    for (let j = i + 1; j < pins.length; j++) {
+      const d = Math.hypot(pins[i].pinX - pins[j].pinX, pins[i].pinY - pins[j].pinY);
+      assert.ok(d >= 20 - 1e-6, `pins ${pins[i].id},${pins[j].id} too close: ${d}`);
+    }
+  }
+});
