@@ -150,6 +150,31 @@ test("buildVisitQueue: 逆走(手がかり連鎖なし)はなまえ問でもshow
   assert.equal(nameItem.showFlagContext, false);
 });
 
+/* ---------- 実機バグ修正: 逆走のばしょ問（先頭・手がかり連鎖なし）が
+   どの国を探すか一切わからずプレイ不能になる問題（高優先・問題1） ---------- */
+test("buildVisitQueue: 逆走のばしょ問はshowNameContext=true（先頭で手がかりが無いため国名を最小限表示）", () => {
+  const save = { prog: { C0: { flag: 1, name: 1, loc: 1 } }, srs: {}, recent: [] };
+  const q = buildVisitQueue(TARGET, COUNTRIES, FLAG_GROUPS, save);
+  const byType = Object.fromEntries(q.map((i) => [i.qType, i]));
+  assert.equal(byType.loc.showNameContext, true);
+  assert.equal(byType.name.showNameContext, false);
+  assert.equal(byType.flag.showNameContext, false);
+});
+
+test("buildVisitQueue: 順走のばしょ問(Q3)はshowNameContext=false（こっき/なまえの記憶連鎖で足りるため据え置き）", () => {
+  const q = buildVisitQueue(TARGET, COUNTRIES, FLAG_GROUPS, emptySave());
+  const locItem = q.find((i) => i.qType === "loc");
+  assert.equal(locItem.showNameContext, false);
+});
+
+test("buildRetryItem: ばしょ問の再出題でも direction が保たれる限りshowNameContextは一貫する（逆走の再出題はtrueのまま）", () => {
+  const save = { prog: { C0: { flag: 1, name: 1, loc: 1 } }, srs: {}, recent: [] };
+  const q = buildVisitQueue(TARGET, COUNTRIES, FLAG_GROUPS, save);
+  const locItem = q.find((i) => i.qType === "loc");
+  const retry = buildRetryItem(locItem, COUNTRIES, FLAG_GROUPS, "normal");
+  assert.equal(retry.showNameContext, true);
+});
+
 test("buildVisitQueue: 隠し難易度easyのプロフィールはこっき問が2択になる", () => {
   const q = buildVisitQueue(TARGET, COUNTRIES, FLAG_GROUPS, emptySave(), { hiddenDifficulty: "easy" });
   const flagItem = q.find((i) => i.qType === "flag");
