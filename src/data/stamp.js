@@ -40,7 +40,7 @@ function shapePath(shape) {
 }
 
 /* "YYYY-MM-DD" -> "YYYY.M.D" */
-function fmtDate(dateStr) {
+export function fmtDate(dateStr) {
   const [y, m, d] = dateStr.split("-");
   return `${y}.${Number(m)}.${Number(d)}`;
 }
@@ -97,4 +97,42 @@ export function applyStamp(save, id, dateStr, gold = false) {
     ...save,
     passport: { ...passport, stamps: { ...passport.stamps, [id]: { dates, gold: prev.gold || gold } } },
   };
+}
+
+/* HANDOFF v2.3 §7: しんさかんタイム完了で「ボーナススタンプ！」を1個付与する純粋関数。
+   id形式は"BONUS-"+tripId（例:"BONUS-t1-1"）で確定済み（§8.1）。prog/srs/stampsには
+   一切触れない（「採点結果は子の成績に一切入れない」を書き込み側でも徹底するため）。
+   同じ旅で二度呼んでも重複追記しない（冪等）。 */
+export function awardBonus(save, tripId) {
+  const passport = save.passport || { stamps: {}, bonus: [], routes: [] };
+  const bonusId = "BONUS-" + tripId;
+  if (passport.bonus.includes(bonusId)) return save;
+  return { ...save, passport: { ...passport, bonus: [...passport.bonus, bonusId] } };
+}
+
+/* HANDOFF v2.3 §7/§10 Opus確認事項2への実装案: ボーナスの絵柄はmakeStamp（国別スタンプ）を
+   流用せず専用の簡易絵柄にした。makeStampは国(id/cont/nameKana)とおみやげの組が前提だが、
+   ボーナスは特定の1か国に紐付かない（その旅の3か国ぶんの審査官タイムをやりきった証）ため。
+   金インク固定＋メダル型（国スタンプの5形＝STAMP_SHAPESとは別の専用形）で「特別」を
+   視覚的に区別する。dateStrはsave.passport.bonus自体には持たせない（§8.1のスキーマを
+   変更しないため）。呼び出し側（App.jsx）がsave.passport.routes[].dateから解決して渡す想定
+   （見つからない場合はundefinedのままでよく、その場合は日付行を省く）。
+   回転・かすれはmakeStamp同様hash(id+date)シードのmulberry32でMath.random不使用・再現可能。 */
+const BONUS_MEDAL = `<path d="M60,4 L74,38 L111,42 L84,66 L92,102 L60,82 L28,102 L36,66 L9,42 L46,38 Z" />`;
+
+export function makeBonusStamp(bonusId, dateStr) {
+  const rng = mulberry32(hashString(bonusId + (dateStr || "")));
+  const rotate = Math.round(rng() * 24 - 12); /* -12°〜+12° */
+  const opacity = 0.8 + rng() * 0.15;
+  const dateLine = dateStr
+    ? `<text x="60" y="98" font-size="9" letter-spacing="2">${fmtDate(dateStr)}</text>`
+    : "";
+  return `<svg viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="しんさかんタイムのボーナススタンプ">
+  <g transform="rotate(${rotate} 60 60)" stroke="${GOLD_INK}" fill="none" stroke-width="3" opacity="${opacity.toFixed(2)}">${BONUS_MEDAL}</g>
+  <g transform="rotate(${rotate} 60 60)" fill="${GOLD_INK}" opacity="${opacity.toFixed(2)}" text-anchor="middle" font-family="sans-serif">
+    <text x="60" y="46" font-size="20">🛂</text>
+    <text x="60" y="70" font-size="13" font-weight="900">しんさかん</text>
+    ${dateLine}
+  </g>
+</svg>`;
 }

@@ -45,3 +45,13 @@ export function allRouteIds(routes, contOf, cont) {
   }
   return out;
 }
+
+/* PR5 §7: passport.bonusは"BONUS-"+tripIdの文字列配列のみで日付を持たない（§8.1の
+   スキーマはPR5では変更しない）。表示用の日付は、bonusIdからtripIdを取り出し、
+   同じtripIdのroutesエントリ（にゅうこくしんさ完了時に必ず1件書き込まれる）から
+   逆引きする。一致するroutesが無い（壊れたセーブ等）場合はnullを返す。 */
+export function bonusDateOf(routes, bonusId) {
+  const tripId = typeof bonusId === "string" && bonusId.startsWith("BONUS-") ? bonusId.slice(6) : bonusId;
+  const route = (Array.isArray(routes) ? routes : []).find((r) => r && r.tripId === tripId);
+  return route ? route.date : null;
+}
