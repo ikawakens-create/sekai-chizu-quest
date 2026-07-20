@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { orderedStamps, paginateStamps, lastRouteIds, allRouteIds, STAMPS_PER_PAGE } from "../src/data/passport.js";
+import { orderedStamps, paginateStamps, lastRouteIds, allRouteIds, STAMPS_PER_PAGE, bonusDateOf } from "../src/data/passport.js";
 
 test("orderedStamps: 各国の最初の日付の昇順に並ぶ（押印順）", () => {
   const stamps = {
@@ -105,4 +105,23 @@ test("allRouteIds: contOf/contを渡すと大陸で絞り込む", () => {
 test("allRouteIds: 空でもクラッシュしない", () => {
   assert.deepEqual(allRouteIds([]), new Set());
   assert.deepEqual(allRouteIds(undefined), new Set());
+});
+
+/* ---------- bonusDateOf（PR5 §7: bonusIdからtripId経由でroutesの日付を逆引き） ---------- */
+test("bonusDateOf: 'BONUS-'+tripIdから一致するroutesの日付を返す", () => {
+  const routes = [
+    { tripId: "t1-1", ids: ["JPN", "AUS", "KEN"], date: "2026-07-18" },
+    { tripId: "t1-2", ids: ["ITA", "USA", "IND"], date: "2026-07-20" },
+  ];
+  assert.equal(bonusDateOf(routes, "BONUS-t1-2"), "2026-07-20");
+});
+
+test("bonusDateOf: 一致するroutesが無ければnull", () => {
+  const routes = [{ tripId: "t1-1", ids: ["JPN"], date: "2026-07-18" }];
+  assert.equal(bonusDateOf(routes, "BONUS-t9-9"), null);
+});
+
+test("bonusDateOf: 空/未定義のroutesでも例外を投げずnull", () => {
+  assert.equal(bonusDateOf([], "BONUS-t1-1"), null);
+  assert.equal(bonusDateOf(undefined, "BONUS-t1-1"), null);
 });

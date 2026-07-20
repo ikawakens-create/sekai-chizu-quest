@@ -28,8 +28,8 @@ import {
   buildCustomsQueue, advanceCustomsQueue, applyCustomsAnswer,
 } from "./data/customs.js";
 import { souvenirOf, souvenirDisplay, SOUVENIR_NOTES } from "./data/souvenirs.js";
-import { makeStamp, applyStamp } from "./data/stamp.js";
-import { orderedStamps, paginateStamps, lastRouteIds, allRouteIds } from "./data/passport.js";
+import { makeStamp, applyStamp, awardBonus, makeBonusStamp } from "./data/stamp.js";
+import { orderedStamps, paginateStamps, lastRouteIds, allRouteIds, bonusDateOf } from "./data/passport.js";
 import { hashString } from "./data/rng.js";
 import {
   viewForCountry as computeCountryView, viewForCountries, showInsetFor, applyPinchZoom, highlightModeFor,
@@ -658,7 +658,7 @@ export default function App() {
   const [tripVisits, setTripVisits] = useState([]);         // 今回の訪問国3件（パック国2＋のりつぎ1）
   const [tripTransferId, setTripTransferId] = useState(null);
   const [tripVisitIdx, setTripVisitIdx] = useState(0);      // 訪問中の国index（0〜2）
-  const [tripScene, setTripScene] = useState("gate");       // gate|visit|welcome|customsIntro|customs|arrival
+  const [tripScene, setTripScene] = useState("gate");       // gate|visit|welcome|customsIntro|customs|shinsakanIntro|shinsakan|arrival
   const [tripQ, setTripQ] = useState(null);                 // { queue, idx, firstAttemptResults }（advanceVisitQueue用）
   const [tripSubPhase, setTripSubPhase] = useState("zoom");  // 1サブ問内: zoom|answer|feedback
   /* feedback表示中はtripQ.idxが既に次(or末尾=queue.length)へ進んでいるため、
@@ -677,6 +677,14 @@ export default function App() {
   const [customsPicked, setCustomsPicked] = useState(null);
   const [customsLastOk, setCustomsLastOk] = useState(false);
   const customsLockRef = useRef(false);
+
+  /* しんさかんタイム（HANDOFF v2.3 §7・PR5: 子→親の出題。3枚とも「採点が先・めくるのは後」を
+     UI状態で強制する。tripSkanIdxがtripVisits.length（=3）に達したら「ボーナススタンプ！」の
+     完了ビューを表示する合図として使う。採点(◯/✗)結果はsaveへ一切書き込まない（親の成績という
+     建前・§7「子の成績prog/srsに一切入れない」）ので、専用のローカルstateのみで完結させる。 */
+  const [tripSkanIdx, setTripSkanIdx] = useState(0);
+  const [tripSkanGraded, setTripSkanGraded] = useState(null); // null|true|false（◯✗未押下|◯|✗）
+  const [tripSkanRevealed, setTripSkanRevealed] = useState(false); // ◯✗のあとにめくったか
 
   /* パスポート画面（HANDOFF v2.3 §6.2） */
   const [passportPage, setPassportPage] = useState(0);       // 0=表紙, 1..N=スタンプ見開き, 最後=たびのきろく
@@ -942,7 +950,46 @@ export default function App() {
         routes: [...s.passport.routes, { tripId: tripPack.id, ids: tripVisits.map((c) => c.id), date: todayDateStr() }],
       },
     }));
-    setTripScene("arrival");
+    startShinsakan();
+  };
+
+  /* --- しんさかんタイム（§7）：ぜいかん後・とうちゃく前の幕間＋子→親の出題3枚 --- */
+  const startShinsakan = () => {
+    setTripSkanIdx(0);
+    setTripSkanGraded(null);
+    setTripSkanRevealed(false);
+    setTripScene("shinsakanIntro");
+  };
+  const advanceFromShinsakanIntro = () => setTripScene("shinsakan");
+  /* 「またこんど」：ボーナス以外の進行に影響なし（§7）。にゅうこくしんさ完了時に
+     書き込み済みのroutesはそのまま残り、bonusだけ付与せずとうちゃくへ進む。 */
+  const skipShinsakan = () => setTripScene("arrival");
+  /* ③採点が先：◯✗はカードが1回めくられる前だけ受け付ける。二重押下・めくった後の
+     押し直しを弾く（未定義動作防止・§7手順の機械的強制）。 */
+  const gradeShinsakan = (ok) => {
+    if (tripSkanGraded !== null) return;
+    setTripSkanGraded(ok);
+  };
+  /* ④めくるのは後：◯✗を押すまでtripSkanGradedはnullのままなので、めくる操作自体を
+     受け付けない＝物理的にめくれない（§7の学習効果=生成効果の核心）。 */
+  const revealShinsakan = () => {
+    if (tripSkanGraded === null || tripSkanRevealed) return;
+    setTripSkanRevealed(true);
+  };
+  /* 3枚目まで終わったらボーナス付与（§7「3枚終わったらボーナススタンプ！」）。
+     tripSkanIdxをtripVisits.lengthまで進めることを「完了ビュー」表示の合図にする。 */
+  const advanceShinsakanCard = () => {
+    if (!tripSkanRevealed) return;
+    const nextIdx = tripSkanIdx + 1;
+    if (nextIdx < tripVisits.length) {
+      setTripSkanIdx(nextIdx);
+      setTripSkanGraded(null);
+      setTripSkanRevealed(false);
+      return;
+    }
+    updateSave((s) => awardBonus(s, tripPack.id));
+    sndStamp();
+    setTripSkanIdx(nextIdx);
   };
 
   /* であい/のりつぎの次の訪問へ、または最後ならぜいかんへ（§1） */
@@ -1708,11 +1755,128 @@ export default function App() {
               <div style={{ marginTop: 12 }}>
                 <BigBtn color={isCustomsCorrect ? "#a86fe0" : "#d05a4a"} onClick={customsNext}>
                   {isCustomsCorrect
-                    ? (customsQ.idx >= customsQ.queue.length ? "たびの けっかを みる！" : "つぎの もんだいへ ▶")
+                    ? (customsQ.idx >= customsQ.queue.length ? "つぎへ ▶" : "つぎの もんだいへ ▶")
                     : "もういちど ちょうせん！ 🔁"}
                 </BigBtn>
               </div>
             )}
+          </div>
+        </div>
+      );
+    }
+
+    /* --- shinsakanIntro: しんさかんタイムの幕間宣言（§7手順1） --- */
+    if (tripScene === "shinsakanIntro") {
+      return (
+        <div style={{ ...wrap, minHeight: "auto", height: "100dvh", padding: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center" }}
+          onClick={advanceFromShinsakanIntro}>
+          <style>{css}</style>
+          <div style={{ fontSize: 64, animation: "floaty 2.2s ease-in-out infinite" }}>🛂</div>
+          <div style={{ fontSize: 20, fontWeight: 900, marginTop: 10 }}><Ruby t={"こんどは きみが しんさかんだ！"} /></div>
+          <div style={{ fontSize: 15, fontWeight: 700, color: "#5a7ba0", marginTop: 8 }}><Ruby t={"パパか ママに もんだいを だそう！"} /></div>
+          <div style={{ marginTop: 24, maxWidth: 320, width: "100%" }}>
+            <BigBtn color="#3dae7a" onClick={advanceFromShinsakanIntro}>すすむ ▶（タップでOK）</BigBtn>
+          </div>
+          <button onClick={(e) => { e.stopPropagation(); skipShinsakan(); }} style={{
+            marginTop: 14, border: "none", background: "none", color: "#8a9ab0", fontWeight: 800,
+            fontSize: 12.5, fontFamily: "inherit", textDecoration: "underline", cursor: "pointer",
+          }}>またこんど</button>
+        </div>
+      );
+    }
+
+    /* --- shinsakan: 子→親の出題3枚（§7手順2-4）。◯✗（採点）が先・めくる（正解表示）は後を
+       UI状態（tripSkanGraded/tripSkanRevealed）で機械的に強制する。3枚終わると
+       tripSkanIdxがtripVisits.lengthに達し、ボーナススタンプの完了ビューを表示する。 --- */
+    if (tripScene === "shinsakan") {
+      const done = tripSkanIdx >= tripVisits.length;
+      if (done) {
+        const bonusId = "BONUS-" + tripPack.id;
+        const bonusSvg = makeBonusStamp(bonusId, todayDateStr());
+        return (
+          <div key={`shinsakan-done-${bonusId}`}
+            style={{ ...wrap, minHeight: "auto", height: "100dvh", padding: 0, display: "flex", flexDirection: "column", overflow: "hidden", animation: "stampShake .5s ease-out" }}
+            onClick={() => setTripScene("arrival")}>
+            <style>{css}</style>
+            <Confetti />
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 14px" }}>
+              <div style={{ fontSize: 20, fontWeight: 900, color: "#e8a000" }}>🎖️ ボーナススタンプ！</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#5a7ba0", marginTop: 6 }}><Ruby t={"しんさかんタイム、おつかれさま！"} /></div>
+              <div style={{ width: 128, height: 128, margin: "16px auto 0" }} dangerouslySetInnerHTML={{ __html: bonusSvg }} />
+            </div>
+            <div style={{ flex: "none", padding: "10px 14px calc(10px + env(safe-area-inset-bottom))" }}>
+              <div style={{ maxWidth: 480, margin: "0 auto" }}>
+                <BigBtn color="#3dae7a" onClick={() => setTripScene("arrival")}>とうちゃくへ ▶（タップでOK）</BigBtn>
+              </div>
+            </div>
+          </div>
+        );
+      }
+      const country = tripVisits[tripSkanIdx];
+      const canGrade = tripSkanGraded === null;
+      const canReveal = !canGrade && !tripSkanRevealed;
+      return (
+        <div key={`shinsakan-${tripSkanIdx}`}
+          style={{ ...wrap, minHeight: "auto", height: "100dvh", padding: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          <style>{css}</style>
+          <div style={{ flex: "none", display: "flex", justifyContent: "center", alignItems: "center", gap: 6, padding: "8px 0 2px" }}>
+            {tripVisits.map((_, i) => (
+              <div key={i} style={{
+                width: i === tripSkanIdx ? 14 : 10, height: i === tripSkanIdx ? 14 : 10, borderRadius: "50%",
+                background: i < tripSkanIdx ? "#4cae6e" : i === tripSkanIdx ? "#a86fe0" : "#c9d8e8", transition: "all .3s",
+              }} />
+            ))}
+          </div>
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 16px", maxWidth: 480, width: "100%", margin: "0 auto", boxSizing: "border-box" }}>
+            <div onClick={revealShinsakan} style={{
+              width: "100%", maxWidth: 260, aspectRatio: "4/3", borderRadius: 20,
+              background: "linear-gradient(180deg,#fff,#eef4fb)", display: "flex", flexDirection: "column",
+              alignItems: "center", justifyContent: "center", boxShadow: "0 6px 18px rgba(40,80,120,.16)",
+              cursor: canReveal ? "pointer" : "default", animation: tripSkanRevealed ? "pop .3s" : "none",
+            }}>
+              {tripSkanRevealed ? (
+                <div style={{ textAlign: "center" }}>
+                  <Flag c={country} w={96} />
+                  <div style={{ fontSize: 21, fontWeight: 900, marginTop: 8 }}>
+                    {country.k ? <ruby>{country.n}<rt style={{ fontSize: "0.5em", color: "#7a8aa0" }}>{country.k}</rt></ruby> : country.n}
+                  </div>
+                </div>
+              ) : (
+                <Flag c={country} w={140} />
+              )}
+            </div>
+            <div style={{ marginTop: 14, fontSize: 14, fontWeight: 800, color: "#5a7ba0", textAlign: "center", minHeight: 20 }}>
+              {tripSkanRevealed
+                ? <Ruby t={"あってたかな？"} />
+                : canGrade
+                  ? <Ruby t={"こたえを こころのなかで いってから めくろう！"} />
+                  : <Ruby t={"カードを タップして めくろう ▶"} />}
+            </div>
+            {canGrade && (
+              <div style={{ display: "flex", gap: 14, marginTop: 14 }}>
+                <button onClick={() => gradeShinsakan(true)} style={{
+                  width: 76, height: 76, borderRadius: "50%", border: "3px solid #4cae6e", background: "#e0f6db",
+                  fontSize: 30, fontWeight: 900, color: "#2f8f4e", cursor: "pointer", fontFamily: "inherit",
+                }}>⭕</button>
+                <button onClick={() => gradeShinsakan(false)} style={{
+                  width: 76, height: 76, borderRadius: "50%", border: "3px solid #d05a4a", background: "#fde3df",
+                  fontSize: 30, fontWeight: 900, color: "#c0392b", cursor: "pointer", fontFamily: "inherit",
+                }}>❌</button>
+              </div>
+            )}
+            {tripSkanRevealed && (
+              <div style={{ marginTop: 16, maxWidth: 300, width: "100%" }}>
+                <BigBtn color="#a86fe0" onClick={advanceShinsakanCard}>
+                  {tripSkanIdx + 1 < tripVisits.length ? "つぎの カードへ ▶" : "ボーナススタンプ！ 🎖️"}
+                </BigBtn>
+              </div>
+            )}
+          </div>
+          <div style={{ flex: "none", textAlign: "center", padding: "6px 14px calc(6px + env(safe-area-inset-bottom))" }}>
+            <button onClick={skipShinsakan} style={{
+              border: "none", background: "none", color: "#8a9ab0", fontWeight: 800,
+              fontSize: 12.5, fontFamily: "inherit", textDecoration: "underline", cursor: "pointer",
+            }}>またこんど</button>
           </div>
         </div>
       );
@@ -2039,17 +2203,31 @@ export default function App() {
     );
   }
 
-  /* ===== パスポート（HANDOFF v2.3 §6.2） =====
-     表紙 → スタンプ見開き（1ページ6個・押印順）×N → 最終ページ「たびのきろく」（全航跡・大陸フィルタ）。
+  /* ===== パスポート（HANDOFF v2.3 §6.2・PR5でボーナスページを追加） =====
+     表紙 → スタンプ見開き（1ページ6個・押印順）×N → （ボーナスがあれば）ボーナス見開き
+     → 最終ページ「たびのきろく」（全航跡・大陸フィルタ）。
      並び順・ページ分割・航跡集計はsrc/data/passport.js（純粋関数・テスト済み）に委譲する。
-     1画面スクロールなし（welcome画面と同じ100dvh固定＋flex column パターン）。 */
+     1画面スクロールなし（welcome画面と同じ100dvh固定＋flex column パターン）。
+     [実装解釈メモ] §7のOpus確認事項1: ボーナスは既存の押印見開き（orderedStamps）へは
+     混ぜず、専用の1ページ（見開きと同じ6個/ページのグリッド。paginateStampsは配列を
+     チャンク分割するだけの汎用ヘルパーなのでそのまま再利用できる）を新設した。理由は
+     (1) orderedStampsは国別スタンプ専用の型（{id,dates,gold}）で正規化されており、
+     国に紐付かないボーナスを混ぜるとその契約が崩れる、(2) 既存の押印順表示（受け入れ
+     基準にもなっている並び順）を一切変更せずに追加できる、の2点。ボーナスが0件のときは
+     ページ自体を作らない（表紙の次はいきなり見開き、または即たびのきろく）。 */
   if (screen === "passport") {
     const stampList = orderedStamps(save.passport.stamps);
     const spreadPages = paginateStamps(stampList);
-    const totalPages = spreadPages.length + 2; // 表紙 + 見開きN + たびのきろく
+    const bonusList = Array.isArray(save.passport.bonus) ? save.passport.bonus : [];
+    const bonusPages = bonusList.length > 0 ? paginateStamps(bonusList.map((id) => ({ id }))) : [];
+    const totalPages = spreadPages.length + bonusPages.length + 2; // 表紙 + 見開きN + ボーナスN + たびのきろく
     const pageIdx = Math.max(0, Math.min(passportPage, totalPages - 1));
-    const kind = pageIdx === 0 ? "cover" : pageIdx === totalPages - 1 ? "routes" : "spread";
+    const kind = pageIdx === 0 ? "cover"
+      : pageIdx === totalPages - 1 ? "routes"
+      : pageIdx <= spreadPages.length ? "spread"
+      : "bonus";
     const spread = kind === "spread" ? spreadPages[pageIdx - 1] : null;
+    const bonusSpread = kind === "bonus" ? bonusPages[pageIdx - 1 - spreadPages.length] : null;
     const profileName = save.name === "（入力）" ? (saveDoc.activeProfile === "p1" ? "① ひとりめ" : "② ふたりめ") : save.name;
     const routeIdsFiltered = allRouteIds(save.passport.routes, (id) => (byId.get(id) || {}).cont, passportContFilter);
 
@@ -2097,6 +2275,7 @@ export default function App() {
               </div>
               <div style={{ marginTop: 14, fontSize: 13, fontWeight: 800 }}>
                 🎫 スタンプ {stampList.length}こ もっているよ
+                {bonusList.length > 0 && <><br />🎖️ ボーナス {bonusList.length}こ！</>}
               </div>
               <div style={{ marginTop: 16, fontSize: 12.5, fontWeight: 700, opacity: 0.85 }}>
                 <Ruby t={"▶ タップで めくろう"} />
@@ -2133,6 +2312,33 @@ export default function App() {
               {Array.from({ length: 6 - spread.length }).map((_, i) => (
                 <div key={"empty" + i} style={{ borderRadius: 14, border: "1.5px dashed #d5dfe9", opacity: 0.5 }} />
               ))}
+            </div>
+          )}
+
+          {kind === "bonus" && bonusSpread && (
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
+              <div style={{ textAlign: "center", fontSize: 13, fontWeight: 800, color: "#c9971f", flex: "none", marginBottom: 4 }}>
+                🎖️ しんさかんタイムの ボーナス
+              </div>
+              <div style={{ flex: 1, display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "repeat(3,1fr)", gap: 8, alignContent: "stretch" }}>
+                {bonusSpread.map((b) => {
+                  const r = rough(b.id);
+                  const dateStr = bonusDateOf(save.passport.routes, b.id);
+                  const svg = makeBonusStamp(b.id, dateStr);
+                  return (
+                    <div key={b.id} style={{
+                      borderRadius: 14, background: "#fbfdff", border: "1.5px solid #e5dfce",
+                      display: "flex", alignItems: "center", justifyContent: "center", padding: 4, overflow: "hidden",
+                    }}>
+                      <div style={{ width: "78%", aspectRatio: "1/1", transform: `rotate(${r.rot}deg) translate(${r.dx}px,${r.dy}px)` }}
+                        dangerouslySetInnerHTML={{ __html: svg }} />
+                    </div>
+                  );
+                })}
+                {Array.from({ length: 6 - bonusSpread.length }).map((_, i) => (
+                  <div key={"empty" + i} style={{ borderRadius: 14, border: "1.5px dashed #d5dfe9", opacity: 0.5 }} />
+                ))}
+              </div>
             </div>
           )}
 

@@ -75,8 +75,8 @@ replaceOnce(
   buildCustomsQueue, advanceCustomsQueue, applyCustomsAnswer,
 } from "./data/customs.js";\n`, "", "customs import");
 replaceOnce(`import { souvenirOf, souvenirDisplay, SOUVENIR_NOTES } from "./data/souvenirs.js";\n`, "", "souvenirs import");
-replaceOnce(`import { makeStamp, applyStamp } from "./data/stamp.js";\n`, "", "stamp import");
-replaceOnce(`import { orderedStamps, paginateStamps, lastRouteIds, allRouteIds } from "./data/passport.js";\n`, "", "passport import");
+replaceOnce(`import { makeStamp, applyStamp, awardBonus, makeBonusStamp } from "./data/stamp.js";\n`, "", "stamp import");
+replaceOnce(`import { orderedStamps, paginateStamps, lastRouteIds, allRouteIds, bonusDateOf } from "./data/passport.js";\n`, "", "passport import");
 replaceOnce(`import { hashString } from "./data/rng.js";\n`, "", "rng(hashString) import");
 replaceOnce(
 `import {

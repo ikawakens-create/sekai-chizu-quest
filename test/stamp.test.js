@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { makeStamp, shapeOf, STAMP_SHAPES, applyStamp } from "../src/data/stamp.js";
+import { makeStamp, shapeOf, STAMP_SHAPES, applyStamp, awardBonus, makeBonusStamp } from "../src/data/stamp.js";
 
 const JPN = { id: "JPN", cont: "asia", nameKana: "にほん" };
 const AUS = { id: "AUS", cont: "oceania", nameKana: "オーストラリア" };
@@ -131,4 +131,82 @@ test("applyStamp: 他国のスタンプは変更しない", () => {
   save = applyStamp(save, "AUS", "2026-07-19");
   assert.ok(save.passport.stamps.JPN);
   assert.ok(save.passport.stamps.AUS);
+});
+
+/* ---------- awardBonus（HANDOFF v2.3 §7・受け入れ基準§10: 成績非加算の確認テスト） ---------- */
+function saveWithProgress() {
+  return {
+    prog: { JPN: { flag: 3, name: 2, loc: 1 }, AUS: { flag: 1, name: 0, loc: 0 } },
+    srs: { JPN: { streak: 2, lastAt: 1000 } },
+    passport: {
+      stamps: { JPN: { dates: ["2026-07-18"], gold: false } },
+      bonus: ["BONUS-t1-2"],
+      routes: [{ tripId: "t1-2", ids: ["JPN"], date: "2026-07-10" }],
+    },
+  };
+}
+
+test("awardBonus: prog/srsは呼び出し前と完全一致のまま変化しない", () => {
+  const save = saveWithProgress();
+  const next = awardBonus(save, "t1-1");
+  assert.deepEqual(next.prog, save.prog);
+  assert.deepEqual(next.srs, save.srs);
+});
+
+test("awardBonus: passport.stampsとroutesはそのまま保持される（欠損ゼロ）", () => {
+  const save = saveWithProgress();
+  const next = awardBonus(save, "t1-1");
+  assert.deepEqual(next.passport.stamps, save.passport.stamps);
+  assert.deepEqual(next.passport.routes, save.passport.routes);
+});
+
+test("awardBonus: 既存の他ボーナスを保持しつつ'BONUS-'+tripIdを追記する", () => {
+  const save = saveWithProgress();
+  const next = awardBonus(save, "t1-1");
+  assert.deepEqual(next.passport.bonus, ["BONUS-t1-2", "BONUS-t1-1"]);
+});
+
+test("awardBonus: 同一tripIdの二重付与でbonusが重複しない（冪等）", () => {
+  const save = saveWithProgress();
+  const once = awardBonus(save, "t1-1");
+  const twice = awardBonus(once, "t1-1");
+  assert.deepEqual(twice.passport.bonus, ["BONUS-t1-2", "BONUS-t1-1"]);
+});
+
+test("awardBonus: passport未初期化のsaveでも壊れずbonusを1件だけ書き込む", () => {
+  const next = awardBonus({}, "t1-1");
+  assert.deepEqual(next.passport, { stamps: {}, bonus: ["BONUS-t1-1"], routes: [] });
+});
+
+/* ---------- makeBonusStamp（HANDOFF v2.3 §7: 決定的な特別絵柄） ---------- */
+test("makeBonusStamp: 同じ引数なら常に同じSVG文字列（Math.random不使用）", () => {
+  const a = makeBonusStamp("BONUS-t1-1", "2026-07-20");
+  const b = makeBonusStamp("BONUS-t1-1", "2026-07-20");
+  assert.equal(a, b);
+});
+
+test("makeBonusStamp: 金インク(#c9971f)固定で描画する", () => {
+  const svg = makeBonusStamp("BONUS-t1-1", "2026-07-20");
+  assert.ok(svg.includes("#c9971f"));
+});
+
+test("makeBonusStamp: 国スタンプ(STAMP_SHAPES)とは別の専用形（circle/rect/ellipse/hexagon/shieldを使わない）", () => {
+  const svg = makeBonusStamp("BONUS-t1-1", "2026-07-20");
+  assert.ok(!/<circle|<rect|<ellipse|<polygon|M60,6 L110,22/.test(svg));
+});
+
+test("makeBonusStamp: 日付を渡せばYYYY.M.D形式で含む", () => {
+  const svg = makeBonusStamp("BONUS-t1-1", "2026-07-20");
+  assert.ok(svg.includes(">2026.7.20<"));
+});
+
+test("makeBonusStamp: 日付が無い(null)場合でもクラッシュせず日付行を省く", () => {
+  const svg = makeBonusStamp("BONUS-t1-1", null);
+  assert.ok(!/\d{4}\.\d{1,2}\.\d{1,2}/.test(svg));
+});
+
+test("makeBonusStamp: bonusIdが異なれば回転/かすれが変わりうる（見た目の区別）", () => {
+  const a = makeBonusStamp("BONUS-t1-1", "2026-07-20");
+  const b = makeBonusStamp("BONUS-t1-2", "2026-07-20");
+  assert.notEqual(a, b);
 });
