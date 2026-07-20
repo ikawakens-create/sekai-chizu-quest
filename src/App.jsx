@@ -469,6 +469,9 @@ const sndCorrect = () => { tone(880, 0, 0.12); tone(1320, 0.12, 0.22); };
 const sndWrong = () => { tone(220, 0, 0.25, "square", 0.08); tone(180, 0.2, 0.3, "square", 0.08); };
 const sndSpecial = () => { tone(196, 0, 0.16, "square", 0.14); tone(392, 0.3, 0.4, "triangle", 0.16); };
 const sndGacha = () => { for (let i = 0; i < 6; i++) tone(300 + Math.random() * 500, i * 0.09, 0.07, "triangle", 0.1); };
+/* PR6 §0-3: たびの幕間宣言（にゅうこく／ぜいかん／しんさかんタイム）に入るたび鳴らす、
+   やわらかい2音チャイム。sndCorrect/sndSpecialとは音色を変え「区切り」を耳でも示す。 */
+const sndChime = () => { tone(660, 0, 0.16, "sine", 0.10); tone(990, 0.11, 0.22, "sine", 0.08); };
 /* HANDOFF v2.3 §6.2: パスポート押印の「シュポッ」= 短いノイズバースト＋低音。
    スタンプの見た目（makeStamp）はMath.random禁止だが、この効果音はテスト対象外の
    一過性フィードバックなのでsndGacha同様Math.randomでよい。 */
@@ -830,6 +833,7 @@ export default function App() {
     setTripPicked(null);
     tripLockRef.current = false;
     setTripSubPhase("zoom");
+    sndChime();
     setTripScene("gate");
   };
 
@@ -920,6 +924,7 @@ export default function App() {
     setCustomsPhase("answer");
     setCustomsPicked(null);
     customsLockRef.current = false;
+    sndChime();
     setTripScene("customsIntro");
   };
   const advanceFromCustomsIntro = () => setTripScene("customs");
@@ -958,12 +963,16 @@ export default function App() {
     setTripSkanIdx(0);
     setTripSkanGraded(null);
     setTripSkanRevealed(false);
+    sndChime();
     setTripScene("shinsakanIntro");
   };
   const advanceFromShinsakanIntro = () => setTripScene("shinsakan");
+  /* たびの締め＝とうちゃく画面への移行。じゅうらい無音だったのでPR6で節目の効果音を足す
+     （sndSpecial: たいりくせいはのWゲット演出と同じ「ここぞ」の音）。 */
+  const goToArrival = () => { sndSpecial(); setTripScene("arrival"); };
   /* 「またこんど」：ボーナス以外の進行に影響なし（§7）。にゅうこくしんさ完了時に
      書き込み済みのroutesはそのまま残り、bonusだけ付与せずとうちゃくへ進む。 */
-  const skipShinsakan = () => setTripScene("arrival");
+  const skipShinsakan = () => goToArrival();
   /* ③採点が先：◯✗はカードが1回めくられる前だけ受け付ける。二重押下・めくった後の
      押し直しを弾く（未定義動作防止・§7手順の機械的強制）。 */
   const gradeShinsakan = (ok) => {
@@ -1796,7 +1805,7 @@ export default function App() {
         return (
           <div key={`shinsakan-done-${bonusId}`}
             style={{ ...wrap, minHeight: "auto", height: "100dvh", padding: 0, display: "flex", flexDirection: "column", overflow: "hidden", animation: "stampShake .5s ease-out" }}
-            onClick={() => setTripScene("arrival")}>
+            onClick={goToArrival}>
             <style>{css}</style>
             <Confetti />
             <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 14px" }}>
@@ -1806,7 +1815,7 @@ export default function App() {
             </div>
             <div style={{ flex: "none", padding: "10px 14px calc(10px + env(safe-area-inset-bottom))" }}>
               <div style={{ maxWidth: 480, margin: "0 auto" }}>
-                <BigBtn color="#3dae7a" onClick={() => setTripScene("arrival")}>とうちゃくへ ▶（タップでOK）</BigBtn>
+                <BigBtn color="#3dae7a" onClick={goToArrival}>とうちゃくへ ▶（タップでOK）</BigBtn>
               </div>
             </div>
           </div>
@@ -2278,7 +2287,7 @@ export default function App() {
                 {bonusList.length > 0 && <><br />🎖️ ボーナス {bonusList.length}こ！</>}
               </div>
               <div style={{ marginTop: 16, fontSize: 12.5, fontWeight: 700, opacity: 0.85 }}>
-                <Ruby t={"▶ タップで めくろう"} />
+                <Ruby t={"したの ◀▶ か スワイプで めくろう"} />
               </div>
             </div>
           )}
